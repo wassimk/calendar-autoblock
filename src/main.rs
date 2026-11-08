@@ -4,6 +4,7 @@ mod api;
 mod config;
 mod keychain;
 mod oauth;
+mod window;
 
 use clap::{Parser, Subcommand};
 
