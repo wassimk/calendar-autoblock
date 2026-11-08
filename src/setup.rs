@@ -48,10 +48,15 @@ pub fn match_calendar<'a>(
                 .iter()
                 .filter(|e| e.summary.eq_ignore_ascii_case(query))
                 .collect();
-            match named.as_slice() {
-                [] => return Err(MatchError::NotFound),
-                [one] => *one,
-                many => {
+            let owned: Vec<&CalendarListEntry> = named
+                .iter()
+                .copied()
+                .filter(|e| e.access_role == "owner")
+                .collect();
+            match (named.as_slice(), owned.as_slice()) {
+                ([], _) => return Err(MatchError::NotFound),
+                ([one], _) | (_, [one]) => *one,
+                (many, _) => {
                     return Err(MatchError::Ambiguous(
                         many.iter().map(|e| e.id.clone()).collect(),
                     ));
@@ -121,7 +126,9 @@ fn destination(cfg: &Config) -> Result<CalendarRef> {
 
 fn print_calendars(entries: &[CalendarListEntry], synced: &[String], numbered: bool) {
     for (i, e) in entries.iter().enumerate() {
-        let mark = if synced.contains(&e.id) { "[x]" } else { "[ ]" };
+        let is_synced =
+            synced.contains(&e.id) || (e.primary && synced.iter().any(|s| s == "primary"));
+        let mark = if is_synced { "[x]" } else { "[ ]" };
         let note = if e.access_role == "owner" {
             ""
         } else {
@@ -400,6 +407,20 @@ mod tests {
                 .unwrap()
                 .summary,
             "dup"
+        );
+    }
+
+    #[test]
+    fn match_prefers_the_owned_one_when_names_repeat() {
+        let mut e = entries();
+        e.push(cal(
+            "shared@group.calendar.google.com",
+            "Appointments",
+            "reader",
+        ));
+        assert_eq!(
+            match_calendar(&e, "Appointments").unwrap().id,
+            "a1@group.calendar.google.com"
         );
     }
 
