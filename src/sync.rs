@@ -543,6 +543,56 @@ to = { account = "work", calendar = "primary" }
     }
 
     #[test]
+    fn deleted_occurrence_returns_when_whole_series_moves() {
+        let tue = || {
+            ev(
+                "s_tue",
+                "2026-11-10T16:00:00Z",
+                "2026-11-10T17:00:00Z",
+                Some("s"),
+            )
+        };
+        let mut api = api_with(vec![tue()]);
+        let mut state = State::default();
+        run_pass(&cfg(), &mut state, &mut api, now(), false);
+        api.copies.clear();
+        run_pass(&cfg(), &mut state, &mut api, now(), false);
+        assert!(
+            dest(&api).is_empty(),
+            "deleted occurrence should stay deleted"
+        );
+
+        let mut moved_one = ev(
+            "s_tue",
+            "2026-11-10T19:00:00Z",
+            "2026-11-10T20:00:00Z",
+            Some("s"),
+        );
+        moved_one.original_start_time = tue().original_start_time;
+        api.sources
+            .insert(("personal".into(), "appts".into()), vec![moved_one]);
+        run_pass(&cfg(), &mut state, &mut api, now(), false);
+        assert!(
+            dest(&api).is_empty(),
+            "moving just this occurrence keeps it deleted"
+        );
+
+        let series_moved = ev(
+            "s_tue_new",
+            "2026-11-10T19:00:00Z",
+            "2026-11-10T20:00:00Z",
+            Some("s"),
+        );
+        api.sources
+            .insert(("personal".into(), "appts".into()), vec![series_moved]);
+        let report = run_pass(&cfg(), &mut state, &mut api, now(), false);
+        assert_eq!(
+            report.counts.created, 1,
+            "moving the whole series brings the block back"
+        );
+    }
+
+    #[test]
     fn dry_run_changes_nothing() {
         let mut api = api_with(vec![dentist()]);
         let mut state = State::default();
