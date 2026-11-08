@@ -7,6 +7,7 @@ mod eligibility;
 mod event;
 mod google;
 mod keychain;
+mod launchagent;
 mod oauth;
 mod reconcile;
 mod state;
@@ -97,6 +98,11 @@ fn main() {
         Command::Sync { dry_run } => cmd_sync(dry_run),
         Command::Cleanup { dry_run, yes } => cmd_cleanup(dry_run, yes),
         Command::Start { verbose } => daemon::run_daemon(&config::config_path(), verbose),
+        Command::Install { force } => launchagent::install_launchagent(force),
+        Command::Uninstall => launchagent::uninstall_launchagent(),
+        Command::Stop => launchagent::stop_launchagent(),
+        Command::Restart => launchagent::restart_launchagent(),
+        Command::Status => launchagent::show_status(),
         _ => Err(anyhow::anyhow!("not implemented yet")),
     };
     if let Err(e) = result {
