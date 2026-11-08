@@ -1,6 +1,9 @@
 #![allow(dead_code)] // modules land before main wires them up; removed in Task 12
 
+mod api;
 mod config;
+mod keychain;
+mod oauth;
 
 use clap::{Parser, Subcommand};
 
@@ -80,7 +83,41 @@ enum CalendarsCommand {
 }
 
 fn main() {
-    let _cli = Cli::parse();
-    eprintln!("not implemented yet");
-    std::process::exit(1);
+    let cli = Cli::parse();
+    let result = match cli.command {
+        Command::Auth { account, check } => cmd_auth(&account, check),
+        _ => Err(anyhow::anyhow!("not implemented yet")),
+    };
+    if let Err(e) = result {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn cmd_auth(account: &str, check: bool) -> anyhow::Result<()> {
+    use api::AccessTokens;
+    let cfg = config::load(&config::config_path())?;
+    let client = oauth::load_client(&cfg.oauth_client)?;
+    if check {
+        let mut store = oauth::TokenStore::new(client);
+        store.access_token(account)?;
+        println!("OK {account}");
+        return Ok(());
+    }
+    let scopes = config::required_scopes(&cfg, account);
+    if scopes.is_empty() {
+        anyhow::bail!("account {account:?} isn't used by any sync rule in the config");
+    }
+    let hint = cfg.accounts.get(account).and_then(|a| a.email.as_deref());
+    let grant = oauth::run_loopback_flow(&client, &scopes, hint)?;
+    let missing = oauth::missing_scopes(&grant.scope, &scopes);
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "Google didn't grant: {}. Run auth again and leave every box checked.",
+            missing.join(", ")
+        );
+    }
+    keychain::save_refresh_token(account, &grant.refresh_token)?;
+    println!("Signed in {account}");
+    Ok(())
 }
