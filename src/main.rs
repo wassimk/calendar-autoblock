@@ -92,6 +92,10 @@ enum CalendarsCommand {
 
 fn main() {
     let cli = Cli::parse();
+    if let Err(e) = keychain::init() {
+        eprintln!("error: couldn't open the Keychain: {e:#}");
+        std::process::exit(1);
+    }
     let result = match cli.command {
         Command::Auth { account, check } => cmd_auth(&account, check),
         Command::Sync { dry_run } => cmd_sync(dry_run),
