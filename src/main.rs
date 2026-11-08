@@ -187,7 +187,7 @@ fn describe(cfg: &config::Config, action: &reconcile::Action) -> String {
             ..
         } => {
             let why = match reason {
-                DeleteReason::SourceGone => "source gone",
+                DeleteReason::SourceGone => "source gone or outside work hours",
                 DeleteReason::Duplicate => "duplicate",
             };
             format!("delete copy {dest_event_id} ({why})")
