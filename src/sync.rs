@@ -258,31 +258,17 @@ fn apply(
     report: &mut PassReport,
 ) {
     let target = target(account, calendar);
-    match action {
-        Action::Create { desired: d } | Action::Patch { desired: d, .. } => {
-            let body = copy_body(&d.source, &d.source_account, &d.source_calendar, &cfg.label);
-            let result = match action {
-                Action::Patch { dest_event_id, .. } => {
-                    api.patch(account, calendar, dest_event_id, &body)
-                }
-                _ => api.insert(account, calendar, &body),
-            };
-            match result {
-                Ok(ev) => {
-                    if let Some(end) = ev.end.to_utc(cfg.work_hours.timezone) {
-                        state
-                            .known_copies
-                            .insert(ev.id.clone(), known(d.key.clone(), end, account, calendar));
-                    }
-                    if matches!(action, Action::Patch { .. }) {
-                        report.counts.patched += 1;
-                    } else {
-                        report.counts.created += 1;
-                    }
-                }
-                Err(e) => report.failures.push((target, e)),
-            }
-        }
+    let label = &cfg.label;
+    let upsert = |d: &Desired| copy_body(&d.source, &d.source_account, &d.source_calendar, label);
+    let (result, desired) = match action {
+        Action::Create { desired } => (api.insert(account, calendar, &upsert(desired)), desired),
+        Action::Patch {
+            dest_event_id,
+            desired,
+        } => (
+            api.patch(account, calendar, dest_event_id, &upsert(desired)),
+            desired,
+        ),
         Action::Delete { dest_event_id, .. } => {
             match api.delete(account, calendar, dest_event_id) {
                 Ok(()) => {
@@ -291,7 +277,24 @@ fn apply(
                 }
                 Err(e) => report.failures.push((target, e)),
             }
+            return;
         }
+    };
+    match result {
+        Ok(ev) => {
+            if let Some(end) = ev.end.to_utc(cfg.work_hours.timezone) {
+                state.known_copies.insert(
+                    ev.id.clone(),
+                    known(desired.key.clone(), end, account, calendar),
+                );
+            }
+            if matches!(action, Action::Patch { .. }) {
+                report.counts.patched += 1;
+            } else {
+                report.counts.created += 1;
+            }
+        }
+        Err(e) => report.failures.push((target, e)),
     }
 }
 

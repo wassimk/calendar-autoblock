@@ -25,10 +25,6 @@ pub fn windows_between(hours: &WorkHours, from: DateTime<Utc>, to: DateTime<Utc>
         .collect()
 }
 
-pub fn overlaps_any(windows: &[Window], start: DateTime<Utc>, end: DateTime<Utc>) -> bool {
-    windows.iter().any(|w| start < w.end && end > w.start)
-}
-
 // A wall time that falls in a DST gap moves forward an hour, like a clock would
 fn local(tz: Tz, date: NaiveDate, time: NaiveTime) -> DateTime<Utc> {
     let naive = date.and_time(time);
@@ -46,24 +42,15 @@ fn local(tz: Tz, date: NaiveDate, time: NaiveTime) -> DateTime<Utc> {
 mod tests {
     use super::*;
     use crate::config::WorkHours;
-    use chrono::{NaiveTime, TimeZone, Weekday};
+    use chrono::TimeZone;
     use chrono_tz::America::Chicago;
 
     fn hours() -> WorkHours {
-        WorkHours {
-            timezone: Chicago,
-            days: vec![
-                Weekday::Mon,
-                Weekday::Tue,
-                Weekday::Wed,
-                Weekday::Thu,
-                Weekday::Fri,
-            ],
-            start: NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
-            end: NaiveTime::from_hms_opt(17, 0, 0).unwrap(),
-            margin_before: chrono::Duration::hours(1),
-            margin_after: chrono::Duration::hours(1),
-        }
+        crate::event::test_support::wassim_hours()
+    }
+
+    fn overlaps(w: &[Window], start: DateTime<Utc>, end: DateTime<Utc>) -> bool {
+        w.iter().any(|w| start < w.end && end > w.start)
     }
 
     fn utc(s: &str) -> DateTime<Utc> {
@@ -106,7 +93,7 @@ mod tests {
     #[test]
     fn appointment_after_work_inside_margin_overlaps() {
         let w = windows_between(&hours(), ct(2026, 11, 9, 0, 0), ct(2026, 11, 10, 0, 0));
-        assert!(overlaps_any(
+        assert!(overlaps(
             &w,
             ct(2026, 11, 9, 17, 30),
             ct(2026, 11, 9, 18, 30)
@@ -116,7 +103,7 @@ mod tests {
     #[test]
     fn appointment_starting_at_margin_end_does_not_overlap() {
         let w = windows_between(&hours(), ct(2026, 11, 9, 0, 0), ct(2026, 11, 10, 0, 0));
-        assert!(!overlaps_any(
+        assert!(!overlaps(
             &w,
             ct(2026, 11, 9, 18, 0),
             ct(2026, 11, 9, 19, 0)
@@ -128,6 +115,6 @@ mod tests {
         let start = ct(2026, 11, 8, 23, 0);
         let end = ct(2026, 11, 9, 7, 30);
         let w = windows_between(&hours(), start, end);
-        assert!(overlaps_any(&w, start, end));
+        assert!(overlaps(&w, start, end));
     }
 }

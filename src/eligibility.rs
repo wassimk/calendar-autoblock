@@ -1,6 +1,6 @@
 use crate::config::WorkHours;
 use crate::event::GEvent;
-use crate::window::{overlaps_any, windows_between};
+use crate::window::windows_between;
 use chrono::{DateTime, Utc};
 
 pub fn is_eligible(ev: &GEvent, hours: &WorkHours, now: DateTime<Utc>, horizon_days: u32) -> bool {
@@ -32,7 +32,7 @@ pub fn is_eligible(ev: &GEvent, hours: &WorkHours, now: DateTime<Utc>, horizon_d
     if end <= now || start >= horizon_end {
         return false;
     }
-    overlaps_any(&windows_between(hours, start, end), start, end)
+    !windows_between(hours, start, end).is_empty()
 }
 
 #[cfg(test)]
