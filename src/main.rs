@@ -4,6 +4,7 @@ mod api;
 mod config;
 mod eligibility;
 mod event;
+mod google;
 mod keychain;
 mod oauth;
 mod reconcile;

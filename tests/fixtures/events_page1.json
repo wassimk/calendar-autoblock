@@ -1,0 +1,2 @@
+{"kind": "calendar#events", "nextPageToken": "PAGE2",
+ "items": [{"id": "a", "status": "confirmed", "summary": "One", "start": {"dateTime": "2026-11-09T10:00:00-06:00"}, "end": {"dateTime": "2026-11-09T11:00:00-06:00"}, "iCalUID": "a@google.com"}]}

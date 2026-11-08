@@ -1,0 +1,6 @@
+{"kind": "calendar#calendarList",
+ "items": [
+  {"id": "person@example.com", "summary": "person@example.com", "accessRole": "owner", "primary": true},
+  {"id": "fake123@group.calendar.google.com", "summary": "Appointments", "accessRole": "owner"},
+  {"id": "family456@group.calendar.google.com", "summary": "Family", "accessRole": "writer"}
+ ]}

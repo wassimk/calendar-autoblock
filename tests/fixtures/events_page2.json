@@ -1,0 +1,2 @@
+{"kind": "calendar#events", "nextSyncToken": "ignored",
+ "items": [{"id": "b", "status": "confirmed", "summary": "Two", "start": {"date": "2026-11-10"}, "end": {"date": "2026-11-11"}, "iCalUID": "b@google.com"}]}
