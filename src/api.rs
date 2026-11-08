@@ -48,3 +48,47 @@ pub fn percent_encode(s: &str) -> String {
     }
     out
 }
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarListEntry {
+    pub id: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub access_role: String,
+    #[serde(default)]
+    pub primary: bool,
+}
+
+pub trait CalendarApi {
+    fn list_events(
+        &mut self,
+        account: &str,
+        calendar: &str,
+        time_min: chrono::DateTime<chrono::Utc>,
+        time_max: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::event::GEvent>, ApiError>;
+    fn list_copies(
+        &mut self,
+        account: &str,
+        calendar: &str,
+        time_min: chrono::DateTime<chrono::Utc>,
+        time_max: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::event::GEvent>, ApiError>;
+    fn insert(
+        &mut self,
+        account: &str,
+        calendar: &str,
+        body: &serde_json::Value,
+    ) -> Result<crate::event::GEvent, ApiError>;
+    fn patch(
+        &mut self,
+        account: &str,
+        calendar: &str,
+        event_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<crate::event::GEvent, ApiError>;
+    fn delete(&mut self, account: &str, calendar: &str, event_id: &str) -> Result<(), ApiError>;
+    fn list_calendars(&mut self, account: &str) -> Result<Vec<CalendarListEntry>, ApiError>;
+}
