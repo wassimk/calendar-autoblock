@@ -7,6 +7,7 @@ mod event;
 mod keychain;
 mod oauth;
 mod reconcile;
+mod state;
 mod window;
 
 use clap::{Parser, Subcommand};
