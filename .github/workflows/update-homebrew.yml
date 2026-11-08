@@ -1,0 +1,108 @@
+name: Update Homebrew
+
+# Manual until the repo is public: a tap formula can't download release assets
+# from a private repo. Then switch back to workflow_run on Release, like st.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  update-formula:
+    name: Update Formula
+    permissions:
+      contents: read # gh release view and download on this repo
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get release version
+        id: version
+        run: |
+          TAG=$(gh release view --repo wassimk/calendar-autoblock --json tagName -q '.tagName')
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download SHA-256 checksums
+        run: |
+          gh release download "$TAG" \
+            --repo wassimk/calendar-autoblock \
+            --pattern '*-sha.txt' \
+            --dir checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+
+      - name: Parse checksums
+        id: shas
+        run: |
+          for file in checksums/*-sha.txt; do
+            SHA=$(awk '{print $1}' "$file")
+            NAME=$(basename "$file" -sha.txt)
+
+            case "$NAME" in
+              calendar-autoblock-Darwin-aarch64.tar.gz) echo "darwin_arm64=$SHA" >> "$GITHUB_OUTPUT" ;;
+              calendar-autoblock-Darwin-x86_64.tar.gz)  echo "darwin_x86_64=$SHA" >> "$GITHUB_OUTPUT" ;;
+            esac
+          done
+
+      # Credentials stay persisted because the last step pushes the formula
+      # to homebrew-tap with HOMEBREW_TAP_TOKEN. No artifacts are uploaded.
+      - name: Checkout homebrew-tap # zizmor: ignore[artipacked]
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: wassimk/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA_ARM64: ${{ steps.shas.outputs.darwin_arm64 }}
+          SHA_X86_64: ${{ steps.shas.outputs.darwin_x86_64 }}
+        run: |
+          cat > Formula/calendar-autoblock.rb << RUBY
+          class CalendarAutoblock < Formula
+            desc "Block time on your work Google Calendar when personal appointments fall during your work day"
+            homepage "https://github.com/wassimk/calendar-autoblock"
+            version "$VERSION"
+            license "MIT"
+
+            depends_on :macos
+
+            if Hardware::CPU.arm?
+              url "https://github.com/wassimk/calendar-autoblock/releases/download/v#{version}/calendar-autoblock-Darwin-aarch64.tar.gz"
+              sha256 "$SHA_ARM64"
+            elsif Hardware::CPU.intel?
+              url "https://github.com/wassimk/calendar-autoblock/releases/download/v#{version}/calendar-autoblock-Darwin-x86_64.tar.gz"
+              sha256 "$SHA_X86_64"
+            end
+
+            def install
+              bin.install "calendar-autoblock"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/calendar-autoblock --version")
+            end
+          end
+          RUBY
+
+      - name: Remove leading whitespace from formula
+        run: sed -i 's/^          //' Formula/calendar-autoblock.rb
+
+      - name: Commit and push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/calendar-autoblock.rb
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "feat: update calendar-autoblock to $VERSION"
+          git push

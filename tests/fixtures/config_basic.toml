@@ -1,0 +1,22 @@
+oauth_client = "~/.config/calendar-autoblock/client_secret.json"
+label = "Personal Commitment"
+horizon_days = 90
+poll_seconds = 300
+
+[work_hours]
+timezone = "America/Chicago"
+days = ["mon", "tue", "wed", "thu", "fri"]
+start = "08:00"
+end = "17:00"
+margin_before = "1h"
+margin_after = "1h"
+
+[accounts.personal]
+email = "person@example.com"
+
+[accounts.work]
+email = "person@example.org"
+
+[[sync]]
+from = { account = "personal", calendar = "fake123@group.calendar.google.com", name = "Appointments" }
+to   = { account = "work", calendar = "primary" }

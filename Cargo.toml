@@ -10,8 +10,9 @@ chrono = { version = "0.4.45", features = ["serde"] }
 chrono-tz = "0.10.4"
 clap = { version = "4.6.7", features = ["derive"] }
 dirs = "7.0.0"
+form_urlencoded = "1.2.2"
 getrandom = "0.4.3"
-keyring = { version = "3", features = ["apple-native"] }
+keyring-core = "1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
@@ -20,3 +21,6 @@ ureq = { version = "3.5.1", features = ["json"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
