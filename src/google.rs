@@ -2,6 +2,7 @@ use crate::api::{AccessTokens, ApiError, CalendarApi, CalendarListEntry, agent, 
 use crate::event::GEvent;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use std::time::Duration;
 
 pub const BASE_URL: &str = "https://www.googleapis.com/calendar/v3";
@@ -9,7 +10,7 @@ const RETRY_DELAYS: [u64; 3] = [1, 2, 4];
 
 pub struct GoogleCalendar<T: AccessTokens> {
     tokens: T,
-    base_url: String,
+    agent: ureq::Agent,
 }
 
 #[derive(Deserialize)]
@@ -31,7 +32,7 @@ impl<T: AccessTokens> GoogleCalendar<T> {
     pub fn new(tokens: T) -> Self {
         Self {
             tokens,
-            base_url: BASE_URL.to_string(),
+            agent: agent(),
         }
     }
 
@@ -41,29 +42,30 @@ impl<T: AccessTokens> GoogleCalendar<T> {
         method: Method,
         url: &str,
         body: Option<&serde_json::Value>,
-    ) -> Result<(u16, String), ApiError> {
+    ) -> Result<String, ApiError> {
         let mut attempt = 0;
         loop {
-            let token = self.tokens.access_token(account)?;
-            let auth = format!("Bearer {token}");
-            let agent = agent();
-            let result = match (&method, body) {
-                (Method::Get, _) => agent.get(url).header("Authorization", &auth).call(),
-                (Method::Delete, _) => agent.delete(url).header("Authorization", &auth).call(),
-                (Method::Post, b) => agent
+            let auth = format!("Bearer {}", self.tokens.access_token(account)?);
+            let empty = serde_json::Value::Null;
+            let result = match method {
+                Method::Get => self.agent.get(url).header("Authorization", &auth).call(),
+                Method::Delete => self.agent.delete(url).header("Authorization", &auth).call(),
+                Method::Post => self
+                    .agent
                     .post(url)
                     .header("Authorization", &auth)
-                    .send_json(b.cloned().unwrap_or_default()),
-                (Method::Patch, b) => agent
+                    .send_json(body.unwrap_or(&empty)),
+                Method::Patch => self
+                    .agent
                     .patch(url)
                     .header("Authorization", &auth)
-                    .send_json(b.cloned().unwrap_or_default()),
+                    .send_json(body.unwrap_or(&empty)),
             };
             let mut resp = result.map_err(|e| ApiError::Network(e.to_string()))?;
             let status = resp.status().as_u16();
             let text = resp.body_mut().read_to_string().unwrap_or_default();
             if status < 300 {
-                return Ok((status, text));
+                return Ok(text);
             }
             let err = classify(status, &text, account);
             let retryable = err == ApiError::RateLimited || status >= 500;
@@ -72,13 +74,25 @@ impl<T: AccessTokens> GoogleCalendar<T> {
                     std::thread::sleep(Duration::from_secs(*secs));
                     attempt += 1;
                 }
-                _ => {
-                    return Err(if status == 404 || status == 410 {
-                        ApiError::NotOwned(text)
-                    } else {
-                        err
-                    });
-                }
+                _ => return Err(err),
+            }
+        }
+    }
+
+    fn paginate<I: DeserializeOwned>(
+        &mut self,
+        account: &str,
+        url_for: impl Fn(Option<&str>) -> String,
+    ) -> Result<Vec<I>, ApiError> {
+        let mut all = Vec::new();
+        let mut token: Option<String> = None;
+        loop {
+            let page: Page<I> =
+                parse_page(&self.send(account, Method::Get, &url_for(token.as_deref()), None)?)?;
+            all.extend(page.items);
+            match page.next_page_token {
+                Some(n) => token = Some(n),
+                None => return Ok(all),
             }
         }
     }
@@ -91,40 +105,38 @@ impl<T: AccessTokens> GoogleCalendar<T> {
         time_max: DateTime<Utc>,
         copies_only: bool,
     ) -> Result<Vec<GEvent>, ApiError> {
-        let mut all = Vec::new();
-        let mut token: Option<String> = None;
-        loop {
-            let url = events_url(
-                &self.base_url,
-                calendar,
-                time_min,
-                time_max,
-                copies_only,
-                token.as_deref(),
-            );
-            let (_, text) = self.send(account, Method::Get, &url, None)?;
-            let (events, next) = parse_events_page(&text)?;
-            all.extend(events);
-            match next {
-                Some(n) => token = Some(n),
-                None => return Ok(all),
+        self.paginate(account, |page| {
+            events_url(BASE_URL, calendar, time_min, time_max, copies_only, page)
+        })
+        // A calendar this account can't see lists as 404, which means the same as 403 here
+        .map_err(|e| {
+            if e == ApiError::Gone {
+                ApiError::NotOwned(calendar.to_string())
+            } else {
+                e
             }
-        }
+        })
     }
 
-    fn event_url(&self, calendar: &str, event_id: Option<&str>) -> String {
-        let mut url = format!(
-            "{}/calendars/{}/events",
-            self.base_url,
-            percent_encode(calendar)
-        );
-        if let Some(id) = event_id {
-            url.push('/');
-            url.push_str(&percent_encode(id));
-        }
-        url.push_str("?sendUpdates=none");
-        url
+    fn write(
+        &mut self,
+        account: &str,
+        method: Method,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<GEvent, ApiError> {
+        parse_event(&self.send(account, method, url, Some(body))?)
     }
+}
+
+fn event_url(calendar: &str, event_id: Option<&str>) -> String {
+    let mut url = format!("{BASE_URL}/calendars/{}/events", percent_encode(calendar));
+    if let Some(id) = event_id {
+        url.push('/');
+        url.push_str(&percent_encode(id));
+    }
+    url.push_str("?sendUpdates=none");
+    url
 }
 
 impl<T: AccessTokens> CalendarApi for GoogleCalendar<T> {
@@ -149,10 +161,7 @@ impl<T: AccessTokens> CalendarApi for GoogleCalendar<T> {
     }
 
     fn insert(&mut self, a: &str, c: &str, body: &serde_json::Value) -> Result<GEvent, ApiError> {
-        let url = self.event_url(c, None);
-        let (_, text) = self.send(a, Method::Post, &url, Some(body))?;
-        serde_json::from_str(&text)
-            .map_err(|e| ApiError::Other(format!("unreadable insert response: {e}")))
+        self.write(a, Method::Post, &event_url(c, None), body)
     }
 
     fn patch(
@@ -162,37 +171,24 @@ impl<T: AccessTokens> CalendarApi for GoogleCalendar<T> {
         id: &str,
         body: &serde_json::Value,
     ) -> Result<GEvent, ApiError> {
-        let url = self.event_url(c, Some(id));
-        let (_, text) = self.send(a, Method::Patch, &url, Some(body))?;
-        serde_json::from_str(&text)
-            .map_err(|e| ApiError::Other(format!("unreadable patch response: {e}")))
+        self.write(a, Method::Patch, &event_url(c, Some(id)), body)
     }
 
     fn delete(&mut self, a: &str, c: &str, id: &str) -> Result<(), ApiError> {
-        let url = self.event_url(c, Some(id));
-        match self.send(a, Method::Delete, &url, None) {
-            // Already gone counts as deleted
-            Ok(_) | Err(ApiError::NotOwned(_)) => Ok(()),
+        match self.send(a, Method::Delete, &event_url(c, Some(id)), None) {
+            Ok(_) | Err(ApiError::Gone) => Ok(()),
             Err(e) => Err(e),
         }
     }
 
     fn list_calendars(&mut self, a: &str) -> Result<Vec<CalendarListEntry>, ApiError> {
-        let mut all = Vec::new();
-        let mut token: Option<String> = None;
-        loop {
-            let mut url = format!("{}/users/me/calendarList?maxResults=250", self.base_url);
-            if let Some(t) = &token {
+        self.paginate(a, |page| {
+            let mut url = format!("{BASE_URL}/users/me/calendarList?maxResults=250");
+            if let Some(t) = page {
                 url.push_str(&format!("&pageToken={}", percent_encode(t)));
             }
-            let (_, text) = self.send(a, Method::Get, &url, None)?;
-            let (cals, next) = parse_calendar_list(&text)?;
-            all.extend(cals);
-            match next {
-                Some(n) => token = Some(n),
-                None => return Ok(all),
-            }
-        }
+            url
+        })
     }
 }
 
@@ -206,7 +202,8 @@ pub fn classify(status: u16, body: &str, account: &str) -> ApiError {
         },
         429 => ApiError::RateLimited,
         403 if rate_limited => ApiError::RateLimited,
-        403 | 404 => ApiError::NotOwned(snippet(body)),
+        403 => ApiError::NotOwned(snippet(body)),
+        404 | 410 => ApiError::Gone,
         _ => ApiError::Other(format!("Google returned {status}: {}", snippet(body))),
     }
 }
@@ -242,18 +239,14 @@ pub fn events_url(
     url
 }
 
-pub fn parse_events_page(body: &str) -> Result<(Vec<GEvent>, Option<String>), ApiError> {
-    let page: Page<GEvent> = serde_json::from_str(body)
-        .map_err(|e| ApiError::Other(format!("unreadable events page: {e}")))?;
-    Ok((page.items, page.next_page_token))
+fn parse_page<I: DeserializeOwned>(body: &str) -> Result<Page<I>, ApiError> {
+    serde_json::from_str(body)
+        .map_err(|e| ApiError::Other(format!("unreadable Google response: {e}")))
 }
 
-pub fn parse_calendar_list(
-    body: &str,
-) -> Result<(Vec<CalendarListEntry>, Option<String>), ApiError> {
-    let page: Page<CalendarListEntry> = serde_json::from_str(body)
-        .map_err(|e| ApiError::Other(format!("unreadable calendar list: {e}")))?;
-    Ok((page.items, page.next_page_token))
+fn parse_event(body: &str) -> Result<GEvent, ApiError> {
+    serde_json::from_str(body)
+        .map_err(|e| ApiError::Other(format!("unreadable Google response: {e}")))
 }
 
 #[cfg(test)]
@@ -275,26 +268,34 @@ mod tests {
             classify(403, forbidden, "work"),
             ApiError::NotOwned(_)
         ));
-        assert!(matches!(classify(404, "{}", "work"), ApiError::NotOwned(_)));
+        assert_eq!(classify(404, "{}", "work"), ApiError::Gone);
+        assert_eq!(classify(410, "{}", "work"), ApiError::Gone);
         assert!(matches!(classify(500, "{}", "work"), ApiError::Other(_)));
     }
 
     #[test]
     fn parses_paginated_events() {
-        let (a, next) =
-            parse_events_page(include_str!("../tests/fixtures/events_page1.json")).unwrap();
-        assert_eq!(next.as_deref(), Some("PAGE2"));
-        let (b, last) =
-            parse_events_page(include_str!("../tests/fixtures/events_page2.json")).unwrap();
-        assert_eq!(last, None);
-        let ids: Vec<_> = a.iter().chain(b.iter()).map(|e| e.id.as_str()).collect();
+        let a: Page<GEvent> =
+            parse_page(include_str!("../tests/fixtures/events_page1.json")).unwrap();
+        assert_eq!(a.next_page_token.as_deref(), Some("PAGE2"));
+        let b: Page<GEvent> =
+            parse_page(include_str!("../tests/fixtures/events_page2.json")).unwrap();
+        assert_eq!(b.next_page_token, None);
+        let ids: Vec<_> = a
+            .items
+            .iter()
+            .chain(b.items.iter())
+            .map(|e| e.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["a", "b"]);
     }
 
     #[test]
     fn parses_calendar_list_roles() {
-        let (cals, _) =
-            parse_calendar_list(include_str!("../tests/fixtures/calendar_list.json")).unwrap();
+        let cals =
+            parse_page::<CalendarListEntry>(include_str!("../tests/fixtures/calendar_list.json"))
+                .unwrap()
+                .items;
         assert_eq!(cals.len(), 3);
         assert!(cals[0].primary);
         assert_eq!(cals[1].summary, "Appointments");

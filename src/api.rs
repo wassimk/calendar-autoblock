@@ -6,6 +6,7 @@ pub enum ApiError {
     Auth { account: String, message: String },
     RateLimited,
     NotOwned(String),
+    Gone,
     Other(String),
 }
 
@@ -16,6 +17,7 @@ impl fmt::Display for ApiError {
             ApiError::Auth { account, message } => write!(f, "auth error for {account}: {message}"),
             ApiError::RateLimited => write!(f, "rate limited by Google"),
             ApiError::NotOwned(m) => write!(f, "calendar not owned by this account: {m}"),
+            ApiError::Gone => write!(f, "already deleted on Google"),
             ApiError::Other(m) => write!(f, "{m}"),
         }
     }
