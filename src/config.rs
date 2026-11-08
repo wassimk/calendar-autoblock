@@ -56,6 +56,12 @@ pub struct CalendarRef {
     pub name: Option<String>,
 }
 
+impl CalendarRef {
+    pub fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.calendar)
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct RawConfig {
     oauth_client: String,
@@ -79,10 +85,12 @@ struct RawWorkHours {
     margin_after: Option<String>,
 }
 
+pub fn home() -> PathBuf {
+    dirs::home_dir().expect("no home directory")
+}
+
 pub fn config_path() -> PathBuf {
-    dirs::home_dir()
-        .expect("no home directory")
-        .join(".config/calendar-autoblock/config.toml")
+    home().join(".config/calendar-autoblock/config.toml")
 }
 
 pub fn load(path: &Path) -> Result<Config> {
@@ -215,7 +223,7 @@ fn format_margin(d: chrono::Duration) -> String {
 
 fn expand_tilde(p: &str) -> PathBuf {
     match p.strip_prefix("~/") {
-        Some(rest) => dirs::home_dir().expect("no home directory").join(rest),
+        Some(rest) => home().join(rest),
         None => PathBuf::from(p),
     }
 }

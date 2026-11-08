@@ -59,7 +59,7 @@ fn pass(
             let (acct, cal) = (&rule.from.account, &rule.from.calendar);
             match api.list_events(acct, cal, now, time_max) {
                 Ok(events) => {
-                    report.succeeded.push(format!("{acct}/{cal}"));
+                    report.succeeded.push(target(acct, cal));
                     deletable.insert((acct.clone(), cal.clone()));
                     for ev in events.into_iter().filter(|e| !e.is_copy()) {
                         let Some(key) = ev.copy_key() else { continue };
@@ -83,23 +83,21 @@ fn pass(
                 }
                 Err(e) => {
                     report.all_reads_ok = false;
-                    report.failures.push((format!("{acct}/{cal}"), e));
+                    report.failures.push((target(acct, cal), e));
                 }
             }
         }
 
         let copies = match api.list_copies(&dest_account, &dest_calendar, now, time_max) {
             Ok(c) => {
-                report
-                    .succeeded
-                    .push(format!("{dest_account}/{dest_calendar}"));
+                report.succeeded.push(target(&dest_account, &dest_calendar));
                 c
             }
             Err(e) => {
                 report.all_reads_ok = false;
                 report
                     .failures
-                    .push((format!("{dest_account}/{dest_calendar}"), e));
+                    .push((target(&dest_account, &dest_calendar), e));
                 continue;
             }
         };
@@ -137,15 +135,26 @@ fn pass(
     report
 }
 
-/// Every future copy on every destination, as (account, calendar, copy)
+/// The "account/calendar" label used in reports and status
+pub fn target(account: &str, calendar: &str) -> String {
+    format!("{account}/{calendar}")
+}
+
+pub fn target_account(target: &str) -> &str {
+    target.split('/').next().unwrap_or(target)
+}
+
+/// Every future copy on every destination, as (account, calendar, copy), optionally only those from one source
 pub fn cleanup_actions(
     cfg: &Config,
     api: &mut dyn CalendarApi,
     now: DateTime<Utc>,
+    only_source: Option<&crate::config::CalendarRef>,
 ) -> Result<Vec<(String, String, GEvent)>, ApiError> {
     let dests: BTreeSet<(String, String)> = cfg
         .sync
         .iter()
+        .filter(|r| only_source.is_none_or(|src| r.from == *src))
         .map(|r| (r.to.account.clone(), r.to.calendar.clone()))
         .collect();
     // Look past the horizon in case it was shortened since the copies were made
@@ -153,7 +162,11 @@ pub fn cleanup_actions(
     let mut items = Vec::new();
     for (account, calendar) in dests {
         for copy in api.list_copies(&account, &calendar, now, until)? {
-            if copy.is_copy() && approx_end(&copy.end).is_some_and(|end| end > now) {
+            let from_source = only_source.is_none_or(|src| {
+                copy.tag("cab_source_account") == Some(src.account.as_str())
+                    && copy.tag("cab_source_calendar") == Some(src.calendar.as_str())
+            });
+            if copy.is_copy() && from_source && approx_end(&copy.end).is_some_and(|end| end > now) {
                 items.push((account.clone(), calendar.clone(), copy));
             }
         }
@@ -175,7 +188,7 @@ pub fn delete_copies(
                 state.known_copies.remove(&copy.id);
                 deleted += 1;
             }
-            Err(e) => failures.push((format!("{account}/{calendar} {}", copy.id), e)),
+            Err(e) => failures.push((format!("{} {}", target(account, calendar), copy.id), e)),
         }
     }
     (deleted, failures)
@@ -235,7 +248,7 @@ fn apply(
     action: &Action,
     report: &mut PassReport,
 ) {
-    let target = format!("{account}/{calendar}");
+    let target = target(account, calendar);
     match action {
         Action::Create { desired: d } | Action::Patch { desired: d, .. } => {
             let body = copy_body(&d.source, &d.source_account, &d.source_calendar, &cfg.label);
@@ -644,7 +657,7 @@ to = { account = "work", calendar = "primary" }
             ],
         );
         let now: DateTime<Utc> = "2026-11-09T12:00:00Z".parse().unwrap();
-        let items = cleanup_actions(&cfg, &mut api, now).unwrap();
+        let items = cleanup_actions(&cfg, &mut api, now, None).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].2.id, "future");
     }

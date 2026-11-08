@@ -5,7 +5,7 @@ use crate::config::{
 use crate::daemon;
 use crate::keychain;
 use crate::oauth::{self, ClientSecrets};
-use crate::{state, sync};
+use crate::sync;
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -107,6 +107,11 @@ fn prompt(question: &str, default: &str) -> Result<String> {
     })
 }
 
+pub fn confirm(question: &str) -> Result<bool> {
+    let answer = prompt(&format!("{question} [y/N]"), "n")?;
+    Ok(matches!(answer.to_ascii_lowercase().as_str(), "y" | "yes"))
+}
+
 fn source_account(cfg: &Config) -> Result<String> {
     cfg.sync
         .first()
@@ -201,58 +206,33 @@ pub fn calendars_remove(name: &str, yes: bool) -> Result<()> {
                     .is_some_and(|n| n.eq_ignore_ascii_case(name))
         })
         .ok_or_else(|| anyhow!("{name} isn't synced; see calendar-autoblock calendars list"))?;
-    let rule = cfg.sync.remove(pos);
-    let label = rule
-        .from
-        .name
-        .clone()
-        .unwrap_or_else(|| rule.from.calendar.clone());
-
     let mut api = daemon::build_api(&cfg)?;
-    let now = chrono::Utc::now();
-    let until = now + chrono::Duration::days(365);
-    let copies: Vec<_> = api
-        .list_copies(&rule.to.account, &rule.to.calendar, now, until)?
-        .into_iter()
-        .filter(|c| c.tag("cab_source_calendar") == Some(rule.from.calendar.as_str()))
-        .collect();
+    let copies = sync::cleanup_actions(
+        &cfg,
+        &mut api,
+        chrono::Utc::now(),
+        Some(&cfg.sync[pos].from),
+    )?;
+    let rule = cfg.sync.remove(pos);
     config::save(&cfg, &path)?;
-    println!("Stopped syncing {label}.");
-    if copies.is_empty() {
+    println!("Stopped syncing {}.", rule.from.display_name());
+    if copies.is_empty()
+        || !(yes || confirm(&format!("Delete its {} future blocks?", copies.len()))?)
+    {
         return Ok(());
     }
-    let answer = if yes {
-        "y".to_string()
-    } else {
-        prompt(
-            &format!("Delete its {} future blocks? [y/N]", copies.len()),
-            "n",
-        )?
-    };
-    if answer.eq_ignore_ascii_case("y") {
-        let items: Vec<_> = copies
-            .into_iter()
-            .map(|c| (rule.to.account.clone(), rule.to.calendar.clone(), c))
-            .collect();
-        let (mut state, _) = state::load_json_or_reset::<state::State>(&daemon::state_path())?;
-        let (deleted, failures) = sync::delete_copies(&mut api, &mut state, &items);
-        state::save_json(&daemon::state_path(), &state)?;
-        println!("Deleted {deleted} blocks.");
-        if !failures.is_empty() {
-            bail!(
-                "{} blocks weren't deleted; the next pass leaves them alone, so delete them by hand",
-                failures.len()
-            );
-        }
-    }
-    Ok(())
+    daemon::delete_and_report(
+        &mut api,
+        &copies,
+        "the next pass leaves them alone, so delete them by hand",
+    )
 }
 
 pub fn run_setup() -> Result<()> {
     let path = config::config_path();
     println!("calendar-autoblock setup. Press Enter to accept the default in brackets.\n");
 
-    let default_client = config::config_path().with_file_name("client_secret.json");
+    let default_client = path.with_file_name("client_secret.json");
     let client_path = PathBuf::from(prompt(
         "Path to your Google OAuth client JSON",
         &default_client.to_string_lossy(),

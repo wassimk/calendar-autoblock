@@ -22,15 +22,32 @@ pub fn build_api(cfg: &Config) -> Result<GoogleCalendar<TokenStore>> {
     Ok(GoogleCalendar::new(TokenStore::new(client)))
 }
 
+/// Deletes copies, records each success in state, and reports what failed
+pub fn delete_and_report(
+    api: &mut dyn CalendarApi,
+    items: &[(String, String, crate::event::GEvent)],
+    on_failure: &str,
+) -> Result<()> {
+    let (mut state, _) = state::load_json_or_reset::<State>(&state_path())?;
+    let (deleted, failures) = crate::sync::delete_copies(api, &mut state, items);
+    state::save_json(&state_path(), &state)?;
+    println!("Deleted {deleted} blocks.");
+    for (target, err) in &failures {
+        eprintln!("failed {target}: {err}");
+    }
+    if !failures.is_empty() {
+        anyhow::bail!("{} blocks weren't deleted; {on_failure}", failures.len());
+    }
+    Ok(())
+}
+
 pub fn update_status(status: &mut Status, report: &PassReport, now: DateTime<Utc>) {
     status.last_pass = Some(now);
     status.last_counts = report.counts;
     for key in &report.succeeded {
         status.last_success.insert(key.clone(), now);
         status.calendar_errors.remove(key);
-        if let Some(account) = key.split('/').next() {
-            status.auth_errors.remove(account);
-        }
+        status.auth_errors.remove(crate::sync::target_account(key));
     }
     let mut network_failed = false;
     status.last_error = None;
@@ -44,7 +61,7 @@ pub fn update_status(status: &mut Status, report: &PassReport, now: DateTime<Utc
                 );
             }
             ApiError::NotOwned(_) => {
-                let account = key.split('/').next().unwrap_or(key);
+                let account = crate::sync::target_account(key);
                 status.calendar_errors.insert(
                     key.clone(),
                     format!("not owned by {account}; this calendar can't be synced with the current scopes"),

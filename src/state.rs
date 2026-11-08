@@ -45,9 +45,7 @@ pub struct Counts {
 }
 
 pub fn state_dir() -> PathBuf {
-    dirs::home_dir()
-        .expect("no home directory")
-        .join("Library/Application Support/calendar-autoblock")
+    crate::config::home().join("Library/Application Support/calendar-autoblock")
 }
 
 pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> Result<T> {

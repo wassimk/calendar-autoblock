@@ -1,3 +1,4 @@
+use crate::config::home;
 use crate::daemon::status_path;
 use crate::state::{self, Status};
 use anyhow::{Context, Result};
@@ -5,10 +6,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const LABEL: &str = "com.wassimk.calendar-autoblock";
-
-fn home() -> PathBuf {
-    dirs::home_dir().expect("no home directory")
-}
 
 fn plist_path() -> PathBuf {
     home().join(format!("Library/LaunchAgents/{LABEL}.plist"))

@@ -180,8 +180,8 @@ fn describe(cfg: &config::Config, action: &reconcile::Action) -> String {
         cfg.sync
             .iter()
             .find(|r| r.from.calendar == d.source_calendar)
-            .and_then(|r| r.from.name.clone())
-            .unwrap_or_else(|| d.source_calendar.clone())
+            .map_or(d.source_calendar.as_str(), |r| r.from.display_name())
+            .to_string()
     };
     match action {
         Action::Create { desired } => format!("create {} ({})", when(desired), from(desired)),
@@ -203,7 +203,7 @@ fn describe(cfg: &config::Config, action: &reconcile::Action) -> String {
 fn cmd_cleanup(dry_run: bool, yes: bool) -> anyhow::Result<()> {
     let cfg = config::load(&config::config_path())?;
     let mut api = daemon::build_api(&cfg)?;
-    let items = sync::cleanup_actions(&cfg, &mut api, chrono::Utc::now())?;
+    let items = sync::cleanup_actions(&cfg, &mut api, chrono::Utc::now(), None)?;
     let tz = cfg.work_hours.timezone;
     for (account, calendar, copy) in &items {
         let start = copy
@@ -226,35 +226,9 @@ fn cmd_cleanup(dry_run: bool, yes: bool) -> anyhow::Result<()> {
              run `calendar-autoblock stop` (or `uninstall`) first"
         );
     }
-    if !yes && !confirm(&format!("Delete {} copies? [y/N] ", items.len()))? {
+    if !yes && !setup::confirm(&format!("Delete {} copies?", items.len()))? {
         println!("nothing deleted");
         return Ok(());
     }
-    let (mut state, _) = state::load_json_or_reset::<state::State>(&daemon::state_path())?;
-    let (deleted, failures) = sync::delete_copies(&mut api, &mut state, &items);
-    state::save_json(&daemon::state_path(), &state)?;
-    report_deletes(deleted, &failures)
-}
-
-fn report_deletes(deleted: u32, failures: &[(String, api::ApiError)]) -> anyhow::Result<()> {
-    println!("deleted {deleted} copies");
-    for (target, err) in failures {
-        eprintln!("failed {target}: {err}");
-    }
-    if !failures.is_empty() {
-        anyhow::bail!(
-            "{} copies weren't deleted; run cleanup again",
-            failures.len()
-        );
-    }
-    Ok(())
-}
-
-fn confirm(prompt: &str) -> anyhow::Result<bool> {
-    use std::io::Write;
-    print!("{prompt}");
-    std::io::stdout().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+    daemon::delete_and_report(&mut api, &items, "run cleanup again")
 }
