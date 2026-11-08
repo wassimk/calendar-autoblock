@@ -63,13 +63,16 @@ pub fn update_status(status: &mut Status, report: &PassReport, now: DateTime<Utc
 /// One pass against Google, saving state and status. Returns the report and the updated status.
 pub fn pass_once(cfg: &Config, dry_run: bool) -> Result<(PassReport, Status)> {
     let mut api = build_api(cfg)?;
-    let mut state: State = state::load_json(&state_path())?;
+    let (mut state, state_note): (State, _) = state::load_json_or_reset(&state_path())?;
     let now = Utc::now();
     let report = run_pass(cfg, &mut state, &mut api, now, dry_run);
-    let mut status: Status = state::load_json(&status_path())?;
+    let (mut status, status_note): (Status, _) = state::load_json_or_reset(&status_path())?;
     if !dry_run {
         state::save_json(&state_path(), &state)?;
         update_status(&mut status, &report, now);
+        if let Some(note) = state_note.or(status_note) {
+            status.last_error = Some(note);
+        }
         state::save_json(&status_path(), &status)?;
     }
     Ok((report, status))

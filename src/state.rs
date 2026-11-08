@@ -60,12 +60,42 @@ pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> Result<T> {
     }
 }
 
+/// Like load_json, but a corrupt file is renamed aside and replaced by the default,
+/// so one bad write can't stop syncing. Returns a note describing what happened.
+pub fn load_json_or_reset<T: DeserializeOwned + Default>(
+    path: &Path,
+) -> Result<(T, Option<String>)> {
+    match load_json(path) {
+        Ok(v) => Ok((v, None)),
+        Err(e) if path.exists() => {
+            let stamp = Utc::now().format("%Y%m%dT%H%M%SZ");
+            let aside = path.with_file_name(format!(
+                "{}.corrupt-{stamp}",
+                path.file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default()
+            ));
+            std::fs::rename(path, &aside)?;
+            Ok((
+                T::default(),
+                Some(format!(
+                    "{e:#}; moved it to {} and started fresh",
+                    aside.display()
+                )),
+            ))
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
+    let mut file = std::fs::File::create(&tmp)?;
+    std::io::Write::write_all(&mut file, &serde_json::to_vec_pretty(value)?)?;
+    file.sync_all()?;
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -138,6 +168,26 @@ mod tests {
         save_json(&p, &s).unwrap();
         let back: State = load_json(&p).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn corrupt_state_is_set_aside_and_starts_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("state.json");
+        std::fs::write(&p, "{ not json").unwrap();
+        let (s, note): (State, Option<String>) = load_json_or_reset(&p).unwrap();
+        assert_eq!(s, State::default());
+        assert!(note.unwrap().contains("corrupt"));
+        assert!(!p.exists());
+        let set_aside = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("state.json.corrupt-")
+            });
+        assert!(set_aside);
     }
 
     #[test]
