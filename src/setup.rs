@@ -5,6 +5,7 @@ use crate::config::{
 use crate::daemon;
 use crate::keychain;
 use crate::oauth::{self, ClientSecrets};
+use crate::{state, sync};
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -229,10 +230,20 @@ pub fn calendars_remove(name: &str, yes: bool) -> Result<()> {
         )?
     };
     if answer.eq_ignore_ascii_case("y") {
-        for c in &copies {
-            api.delete(&rule.to.account, &rule.to.calendar, &c.id)?;
+        let items: Vec<_> = copies
+            .into_iter()
+            .map(|c| (rule.to.account.clone(), rule.to.calendar.clone(), c))
+            .collect();
+        let (mut state, _) = state::load_json_or_reset::<state::State>(&daemon::state_path())?;
+        let (deleted, failures) = sync::delete_copies(&mut api, &mut state, &items);
+        state::save_json(&daemon::state_path(), &state)?;
+        println!("Deleted {deleted} blocks.");
+        if !failures.is_empty() {
+            bail!(
+                "{} blocks weren't deleted; the next pass leaves them alone, so delete them by hand",
+                failures.len()
+            );
         }
-        println!("Deleted {} blocks.", copies.len());
     }
     Ok(())
 }

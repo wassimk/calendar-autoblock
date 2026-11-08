@@ -161,6 +161,26 @@ pub fn cleanup_actions(
     Ok(items)
 }
 
+/// Deletes each copy, continuing past failures, and forgets only the ones actually deleted
+pub fn delete_copies(
+    api: &mut dyn CalendarApi,
+    state: &mut State,
+    items: &[(String, String, GEvent)],
+) -> (u32, Vec<(String, ApiError)>) {
+    let mut deleted = 0;
+    let mut failures = Vec::new();
+    for (account, calendar, copy) in items {
+        match api.delete(account, calendar, &copy.id) {
+            Ok(()) => {
+                state.known_copies.remove(&copy.id);
+                deleted += 1;
+            }
+            Err(e) => failures.push((format!("{account}/{calendar} {}", copy.id), e)),
+        }
+    }
+    (deleted, failures)
+}
+
 fn detect_manual_deletes(
     state: &mut State,
     account: &str,
@@ -267,6 +287,7 @@ pub mod fake {
         pub calendars: HashMap<String, Vec<CalendarListEntry>>,
         pub fail_list_events: Option<ApiError>,
         pub fail_list_copies: Option<ApiError>,
+        pub fail_delete_ids: Vec<String>,
         pub next_id: u32,
     }
 
@@ -328,6 +349,9 @@ pub mod fake {
             Ok(ev)
         }
         fn delete(&mut self, a: &str, c: &str, id: &str) -> Result<(), ApiError> {
+            if self.fail_delete_ids.iter().any(|f| f == id) {
+                return Err(ApiError::Network("dropped".into()));
+            }
             self.copies
                 .entry(k(a, c))
                 .or_default()
@@ -573,5 +597,45 @@ to = { account = "work", calendar = "primary" }
         let items = cleanup_actions(&cfg, &mut api, now).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].2.id, "future");
+    }
+
+    #[test]
+    fn delete_copies_keeps_going_and_records_each_success() {
+        let copy = |id: &str| -> GEvent {
+            serde_json::from_value(json!({
+                "id": id, "start": {"dateTime": "2026-11-10T16:00:00Z"}, "end": {"dateTime": "2026-11-10T17:00:00Z"},
+                "extendedProperties": {"private": {"cab_managed": "1", "cab_ical_uid": id}},
+            }))
+            .unwrap()
+        };
+        let mut api = FakeApi::default();
+        let items: Vec<(String, String, GEvent)> = ["a", "b", "c"]
+            .iter()
+            .map(|id| ("work".to_string(), "primary".to_string(), copy(id)))
+            .collect();
+        api.copies.insert(
+            ("work".into(), "primary".into()),
+            items.iter().map(|i| i.2.clone()).collect(),
+        );
+        api.fail_delete_ids = vec!["b".into()];
+        let mut state = crate::state::State::default();
+        for (_, _, c) in &items {
+            state.known_copies.insert(
+                c.id.clone(),
+                crate::state::KnownCopy {
+                    key: c.copy_key().unwrap(),
+                    end: approx_end(&c.end).unwrap(),
+                    dest_account: "work".into(),
+                    dest_calendar: "primary".into(),
+                },
+            );
+        }
+        let (deleted, failures) = delete_copies(&mut api, &mut state, &items);
+        assert_eq!(deleted, 2);
+        assert_eq!(failures.len(), 1);
+        assert_eq!(
+            state.known_copies.keys().cloned().collect::<Vec<_>>(),
+            vec!["b".to_string()]
+        );
     }
 }

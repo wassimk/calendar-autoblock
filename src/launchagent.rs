@@ -151,13 +151,15 @@ pub fn restart_launchagent() -> Result<()> {
     Ok(())
 }
 
-pub fn show_status() -> Result<()> {
-    let running = Command::new("launchctl")
+pub fn is_running() -> bool {
+    Command::new("launchctl")
         .args(["list", LABEL])
         .output()
-        .context("Failed to run launchctl list")?
-        .status
-        .success();
+        .is_ok_and(|o| o.status.success())
+}
+
+pub fn show_status() -> Result<()> {
+    let running = is_running();
     let status: Status = state::load_json(&status_path())?;
     let yes_no = |v: bool| if v { "yes" } else { "no" };
     let local = |t: chrono::DateTime<chrono::Utc>| {

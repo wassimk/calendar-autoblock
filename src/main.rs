@@ -196,7 +196,6 @@ fn describe(cfg: &config::Config, action: &reconcile::Action) -> String {
 }
 
 fn cmd_cleanup(dry_run: bool, yes: bool) -> anyhow::Result<()> {
-    use api::CalendarApi;
     let cfg = config::load(&config::config_path())?;
     let mut api = daemon::build_api(&cfg)?;
     let items = sync::cleanup_actions(&cfg, &mut api, chrono::Utc::now())?;
@@ -216,17 +215,33 @@ fn cmd_cleanup(dry_run: bool, yes: bool) -> anyhow::Result<()> {
         println!("dry run: {} copies would be deleted", items.len());
         return Ok(());
     }
+    if launchagent::is_running() {
+        anyhow::bail!(
+            "the background service is running and would recreate these blocks within 5 minutes; \
+             run `calendar-autoblock stop` (or `uninstall`) first"
+        );
+    }
     if !yes && !confirm(&format!("Delete {} copies? [y/N] ", items.len()))? {
         println!("nothing deleted");
         return Ok(());
     }
-    let mut state: state::State = state::load_json(&daemon::state_path())?;
-    for (account, calendar, copy) in &items {
-        api.delete(account, calendar, &copy.id)?;
-        state.known_copies.remove(&copy.id);
-    }
+    let (mut state, _) = state::load_json_or_reset::<state::State>(&daemon::state_path())?;
+    let (deleted, failures) = sync::delete_copies(&mut api, &mut state, &items);
     state::save_json(&daemon::state_path(), &state)?;
-    println!("deleted {} copies", items.len());
+    report_deletes(deleted, &failures)
+}
+
+fn report_deletes(deleted: u32, failures: &[(String, api::ApiError)]) -> anyhow::Result<()> {
+    println!("deleted {deleted} copies");
+    for (target, err) in failures {
+        eprintln!("failed {target}: {err}");
+    }
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "{} copies weren't deleted; run cleanup again",
+            failures.len()
+        );
+    }
     Ok(())
 }
 
