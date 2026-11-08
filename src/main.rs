@@ -1,5 +1,3 @@
-#![allow(dead_code)] // modules land before main wires them up; removed in Task 12
-
 mod api;
 mod config;
 mod daemon;
@@ -10,6 +8,7 @@ mod keychain;
 mod launchagent;
 mod oauth;
 mod reconcile;
+mod setup;
 mod state;
 mod sync;
 mod window;
@@ -103,7 +102,12 @@ fn main() {
         Command::Stop => launchagent::stop_launchagent(),
         Command::Restart => launchagent::restart_launchagent(),
         Command::Status => launchagent::show_status(),
-        _ => Err(anyhow::anyhow!("not implemented yet")),
+        Command::Setup => setup::run_setup(),
+        Command::Calendars { command } => match command {
+            CalendarsCommand::List => setup::calendars_list(),
+            CalendarsCommand::Add { name } => setup::calendars_add(&name),
+            CalendarsCommand::Remove { name, yes } => setup::calendars_remove(&name, yes),
+        },
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");
@@ -126,16 +130,7 @@ fn cmd_auth(account: &str, check: bool) -> anyhow::Result<()> {
         anyhow::bail!("account {account:?} isn't used by any sync rule in the config");
     }
     let hint = cfg.accounts.get(account).and_then(|a| a.email.as_deref());
-    let grant = oauth::run_loopback_flow(&client, &scopes, hint)?;
-    let missing = oauth::missing_scopes(&grant.scope, &scopes);
-    if !missing.is_empty() {
-        anyhow::bail!(
-            "Google didn't grant: {}. Run auth again and leave every box checked.",
-            missing.join(", ")
-        );
-    }
-    keychain::save_refresh_token(account, &grant.refresh_token)?;
-    println!("Signed in {account}");
+    setup::sign_in(&client, account, &scopes, hint)?;
     Ok(())
 }
 

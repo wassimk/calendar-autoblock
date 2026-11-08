@@ -93,10 +93,6 @@ impl GEvent {
         Some((self.start.to_utc(tz)?, self.end.to_utc(tz)?))
     }
 
-    pub fn is_all_day(&self) -> bool {
-        self.start.date_time.is_none() && self.start.date.is_some()
-    }
-
     pub fn tag(&self, name: &str) -> Option<&str> {
         self.extended_properties
             .as_ref()?

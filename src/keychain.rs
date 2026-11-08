@@ -14,10 +14,3 @@ pub fn load_refresh_token(account: &str) -> Result<Option<String>> {
         Err(e) => Err(e.into()),
     }
 }
-
-pub fn delete_refresh_token(account: &str) -> Result<()> {
-    match keyring::Entry::new(SERVICE, account)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.into()),
-    }
-}

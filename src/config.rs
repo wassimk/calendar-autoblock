@@ -56,12 +56,6 @@ pub struct CalendarRef {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    Source,
-    Destination,
-}
-
 #[derive(Serialize, Deserialize)]
 struct RawConfig {
     oauth_client: String,
@@ -177,19 +171,6 @@ pub fn required_scopes(cfg: &Config, account: &str) -> Vec<&'static str> {
         scopes.extend(DEST_SCOPES);
     }
     scopes
-}
-
-impl Config {
-    pub fn role_of(&self, account: &str) -> Vec<Role> {
-        let mut roles = Vec::new();
-        if self.sync.iter().any(|r| r.from.account == account) {
-            roles.push(Role::Source);
-        }
-        if self.sync.iter().any(|r| r.to.account == account) {
-            roles.push(Role::Destination);
-        }
-        roles
-    }
 }
 
 fn parse_day(d: &str) -> Result<Weekday> {
