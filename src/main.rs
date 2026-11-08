@@ -1,3 +1,7 @@
+#![allow(dead_code)] // modules land before main wires them up; removed in Task 12
+
+mod config;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
