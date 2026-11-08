@@ -23,6 +23,13 @@ fn current_uid() -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+fn launchctl(args: &[&str]) -> Result<std::process::Output> {
+    Command::new("launchctl")
+        .args(args)
+        .output()
+        .context("Failed to run launchctl")
+}
+
 fn service_target() -> String {
     format!("gui/{}/{LABEL}", current_uid())
 }
@@ -67,9 +74,7 @@ pub fn install_launchagent(force: bool) -> Result<()> {
         .to_string_lossy()
         .to_string();
     if plist.exists() {
-        let _ = Command::new("launchctl")
-            .args(["bootout", &service_target()])
-            .output();
+        let _ = launchctl(&["bootout", &service_target()]);
     }
     std::fs::create_dir_all(log_dir()).context("Failed to create log directory")?;
     if let Some(dir) = plist.parent() {
@@ -77,14 +82,11 @@ pub fn install_launchagent(force: bool) -> Result<()> {
     }
     std::fs::write(&plist, generate_plist(&binary_path))
         .with_context(|| format!("Failed to write plist to {}", plist.display()))?;
-    let output = Command::new("launchctl")
-        .args([
-            "bootstrap",
-            &format!("gui/{}", current_uid()),
-            &plist.to_string_lossy(),
-        ])
-        .output()
-        .context("Failed to run launchctl bootstrap")?;
+    let output = launchctl(&[
+        "bootstrap",
+        &format!("gui/{}", current_uid()),
+        &plist.to_string_lossy(),
+    ])?;
     if !output.status.success() {
         anyhow::bail!(
             "launchctl bootstrap failed: {}",
@@ -98,9 +100,7 @@ pub fn install_launchagent(force: bool) -> Result<()> {
 }
 
 pub fn uninstall_launchagent() -> Result<()> {
-    let _ = Command::new("launchctl")
-        .args(["bootout", &service_target()])
-        .output();
+    let _ = launchctl(&["bootout", &service_target()]);
     let plist = plist_path();
     if plist.exists() {
         std::fs::remove_file(&plist)
@@ -116,10 +116,7 @@ pub fn uninstall_launchagent() -> Result<()> {
 }
 
 pub fn stop_launchagent() -> Result<()> {
-    let output = Command::new("launchctl")
-        .args(["bootout", &service_target()])
-        .output()
-        .context("Failed to run launchctl bootout")?;
+    let output = launchctl(&["bootout", &service_target()])?;
     if output.status.success() {
         println!("Service stopped.");
         return Ok(());
@@ -134,10 +131,7 @@ pub fn stop_launchagent() -> Result<()> {
 }
 
 pub fn restart_launchagent() -> Result<()> {
-    let output = Command::new("launchctl")
-        .args(["kickstart", "-k", &service_target()])
-        .output()
-        .context("Failed to run launchctl kickstart")?;
+    let output = launchctl(&["kickstart", "-k", &service_target()])?;
     if !output.status.success() {
         anyhow::bail!(
             "Failed to restart service: {}",
@@ -149,10 +143,7 @@ pub fn restart_launchagent() -> Result<()> {
 }
 
 pub fn is_running() -> bool {
-    Command::new("launchctl")
-        .args(["list", LABEL])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    launchctl(&["list", LABEL]).is_ok_and(|o| o.status.success())
 }
 
 pub fn show_status() -> Result<()> {
