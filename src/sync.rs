@@ -64,6 +64,13 @@ fn pass(
                     for ev in events.into_iter().filter(|e| !e.is_copy()) {
                         let Some(key) = ev.copy_key() else { continue };
                         seen.insert(key.clone());
+                        // A remembered delete lives as long as its source event, wherever it moves
+                        if let (Some(end), Some((_, src_end))) = (
+                            state.tombstones.get_mut(&key),
+                            ev.bounds(cfg.work_hours.timezone),
+                        ) {
+                            *end = src_end;
+                        }
                         if is_eligible(&ev, &cfg.work_hours, now, cfg.horizon_days) {
                             desired.push(Desired {
                                 key,
@@ -484,6 +491,31 @@ to = { account = "work", calendar = "primary" }
         assert_eq!(report.counts.deleted, 3);
         assert!(dest(&api).is_empty());
         assert!(state.tombstones.is_empty());
+    }
+
+    #[test]
+    fn tombstone_follows_source_moved_later() {
+        let mut api = api_with(vec![dentist()]);
+        let mut state = State::default();
+        run_pass(&cfg(), &mut state, &mut api, now(), false);
+        api.copies.clear();
+        let moved = ev(
+            "dentist",
+            "2026-11-12T16:00:00Z",
+            "2026-11-12T17:00:00Z",
+            None,
+        );
+        api.sources
+            .insert(("personal".into(), "appts".into()), vec![moved]);
+        run_pass(&cfg(), &mut state, &mut api, now(), false);
+        let after_old_end: DateTime<Utc> = "2026-11-10T12:00:00Z".parse().unwrap();
+        run_pass(&cfg(), &mut state, &mut api, after_old_end, false);
+        let report = run_pass(&cfg(), &mut state, &mut api, after_old_end, false);
+        assert_eq!(
+            report.counts.created, 0,
+            "deleted copy came back after its source moved"
+        );
+        assert!(dest(&api).is_empty());
     }
 
     #[test]
