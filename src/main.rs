@@ -2,6 +2,8 @@
 
 mod api;
 mod config;
+mod eligibility;
+mod event;
 mod keychain;
 mod oauth;
 mod window;
