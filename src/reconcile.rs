@@ -1,5 +1,6 @@
 use crate::event::{CopyKey, EventTime, GEvent};
 use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -8,12 +9,6 @@ pub struct Desired {
     pub source: GEvent,
     pub source_account: String,
     pub source_calendar: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Existing {
-    pub dest_event_id: String,
-    pub event: GEvent,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,7 +22,6 @@ pub enum Action {
     },
     Delete {
         dest_event_id: String,
-        key: CopyKey,
         reason: DeleteReason,
     },
 }
@@ -40,11 +34,12 @@ pub enum DeleteReason {
 
 pub fn plan(
     desired: Vec<Desired>,
-    existing: &[Existing],
+    existing: &[GEvent],
     deletable_sources: &BTreeSet<(String, String)>,
     tombstones: &BTreeSet<CopyKey>,
     label: &str,
     now: DateTime<Utc>,
+    tz: Tz,
 ) -> Vec<Action> {
     let mut wanted: BTreeMap<CopyKey, Desired> = BTreeMap::new();
     for d in desired {
@@ -54,16 +49,15 @@ pub fn plan(
     let mut actions = Vec::new();
     let mut matched: BTreeSet<CopyKey> = BTreeSet::new();
     for ex in existing {
-        if approx_end(&ex.event.end).is_none_or(|end| end <= now) {
+        if ex.end.to_utc(tz).is_none_or(|end| end <= now) {
             continue;
         }
-        let Some(key) = ex.event.copy_key() else {
+        let Some(key) = ex.copy_key() else {
             continue;
         };
         if matched.contains(&key) {
             actions.push(Action::Delete {
-                dest_event_id: ex.dest_event_id.clone(),
-                key,
+                dest_event_id: ex.id.clone(),
                 reason: DeleteReason::Duplicate,
             });
             continue;
@@ -71,28 +65,23 @@ pub fn plan(
         match wanted.get(&key) {
             Some(d) => {
                 matched.insert(key);
-                if !matches_source(&ex.event, &d.source, label) {
+                if !matches_source(ex, &d.source, label) {
                     actions.push(Action::Patch {
-                        dest_event_id: ex.dest_event_id.clone(),
+                        dest_event_id: ex.id.clone(),
                         desired: d.clone(),
                     });
                 }
             }
             None => {
                 let origin = (
-                    ex.event
-                        .tag("cab_source_account")
-                        .unwrap_or_default()
-                        .to_string(),
-                    ex.event
-                        .tag("cab_source_calendar")
+                    ex.tag("cab_source_account").unwrap_or_default().to_string(),
+                    ex.tag("cab_source_calendar")
                         .unwrap_or_default()
                         .to_string(),
                 );
                 if deletable_sources.contains(&origin) {
                     actions.push(Action::Delete {
-                        dest_event_id: ex.dest_event_id.clone(),
-                        key,
+                        dest_event_id: ex.id.clone(),
                         reason: DeleteReason::SourceGone,
                     });
                 }
@@ -108,13 +97,20 @@ pub fn plan(
     actions
 }
 
+/// `seen` maps every source event read this pass to its end. A remembered delete follows
+/// its source event's end, wherever it moves, and is forgotten once that end passes.
 pub fn prune_tombstones(
     tombstones: &mut BTreeMap<CopyKey, DateTime<Utc>>,
-    seen: &BTreeSet<CopyKey>,
+    seen: &BTreeMap<CopyKey, DateTime<Utc>>,
     read_sources_ok: bool,
     now: DateTime<Utc>,
 ) {
-    tombstones.retain(|key, end| *end > now && (!read_sources_ok || seen.contains(key)));
+    for (key, end) in tombstones.iter_mut() {
+        if let Some(src_end) = seen.get(key) {
+            *end = *src_end;
+        }
+    }
+    tombstones.retain(|key, end| *end > now && (!read_sources_ok || seen.contains_key(key)));
 }
 
 fn matches_source(copy: &GEvent, source: &GEvent, label: &str) -> bool {
@@ -131,15 +127,6 @@ fn same_time(a: &EventTime, b: &EventTime) -> bool {
         (Some(x), Some(y)) => x == y,
         (None, None) => a.date == b.date,
         _ => false,
-    }
-}
-
-// All-day ends are dates; UTC midnight is close enough to tell past from future
-pub fn approx_end(t: &EventTime) -> Option<DateTime<Utc>> {
-    match (t.date_time, t.date) {
-        (Some(dt), _) => Some(dt.with_timezone(&Utc)),
-        (None, Some(d)) => Some(d.and_hms_opt(0, 0, 0)?.and_utc()),
-        _ => None,
     }
 }
 
@@ -173,13 +160,10 @@ mod tests {
         }
     }
 
-    fn existing_for(dest_id: &str, ev: &GEvent, calendar: &str) -> Existing {
+    fn existing_for(dest_id: &str, ev: &GEvent, calendar: &str) -> GEvent {
         let mut body = copy_body(ev, "personal", calendar, LABEL);
         body["id"] = json!(dest_id);
-        Existing {
-            dest_event_id: dest_id.into(),
-            event: serde_json::from_value(body).unwrap(),
-        }
+        serde_json::from_value(body).unwrap()
     }
 
     fn ok_sources() -> BTreeSet<(String, String)> {
@@ -193,10 +177,18 @@ mod tests {
 
     fn run(
         desired: Vec<Desired>,
-        existing: &[Existing],
+        existing: &[GEvent],
         tombstones: &BTreeSet<CopyKey>,
     ) -> Vec<Action> {
-        plan(desired, existing, &ok_sources(), tombstones, LABEL, now())
+        plan(
+            desired,
+            existing,
+            &ok_sources(),
+            tombstones,
+            LABEL,
+            now(),
+            chrono_tz::America::Chicago,
+        )
     }
 
     fn dentist() -> GEvent {
@@ -228,7 +220,7 @@ mod tests {
     #[test]
     fn edited_copy_snaps_back() {
         let mut ex = existing_for("c1", &dentist(), "appts");
-        ex.event.summary = Some("Lunch".into());
+        ex.summary = Some("Lunch".into());
         let actions = run(vec![desired(dentist(), "appts")], &[ex], &BTreeSet::new());
         assert!(matches!(actions.as_slice(), [Action::Patch { .. }]));
     }
@@ -292,7 +284,18 @@ mod tests {
             [("personal".to_string(), "family".to_string())]
                 .into_iter()
                 .collect();
-        assert!(plan(vec![], &[ex], &only_family, &BTreeSet::new(), LABEL, now()).is_empty());
+        assert!(
+            plan(
+                vec![],
+                &[ex],
+                &only_family,
+                &BTreeSet::new(),
+                LABEL,
+                now(),
+                chrono_tz::America::Chicago
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -317,7 +320,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let seen: BTreeSet<CopyKey> = [kept.clone()].into_iter().collect();
+        let seen: BTreeMap<CopyKey, DateTime<Utc>> = [(kept.clone(), later)].into_iter().collect();
         prune_tombstones(&mut t, &seen, true, now());
         assert_eq!(t.keys().cloned().collect::<Vec<_>>(), vec![kept]);
     }
@@ -332,7 +335,7 @@ mod tests {
             [(unseen.clone(), "2026-11-20T00:00:00Z".parse().unwrap())]
                 .into_iter()
                 .collect();
-        prune_tombstones(&mut t, &BTreeSet::new(), false, now());
+        prune_tombstones(&mut t, &BTreeMap::new(), false, now());
         assert!(t.contains_key(&unseen));
     }
 }

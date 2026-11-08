@@ -2,7 +2,7 @@ use crate::api::{ApiError, CalendarApi};
 use crate::config::Config;
 use crate::eligibility::is_eligible;
 use crate::event::{CopyKey, GEvent, copy_body};
-use crate::reconcile::{Action, Desired, Existing, approx_end, plan, prune_tombstones};
+use crate::reconcile::{Action, Desired, plan, prune_tombstones};
 use crate::state::{Counts, KnownCopy, State};
 use chrono::{DateTime, Utc};
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,7 +42,8 @@ fn pass(
         ..Default::default()
     };
     let time_max = now + chrono::Duration::days(cfg.horizon_days.into());
-    let mut seen: BTreeSet<CopyKey> = BTreeSet::new();
+    let tz = cfg.work_hours.timezone;
+    let mut seen: BTreeMap<CopyKey, DateTime<Utc>> = BTreeMap::new();
 
     let mut by_dest: BTreeMap<(String, String), Vec<&crate::config::SyncRule>> = BTreeMap::new();
     for rule in &cfg.sync {
@@ -63,13 +64,8 @@ fn pass(
                     deletable.insert((acct.clone(), cal.clone()));
                     for ev in events.into_iter().filter(|e| !e.is_copy()) {
                         let Some(key) = ev.copy_key() else { continue };
-                        seen.insert(key.clone());
-                        // A remembered delete lives as long as its source event, wherever it moves
-                        if let (Some(end), Some((_, src_end))) = (
-                            state.tombstones.get_mut(&key),
-                            ev.bounds(cfg.work_hours.timezone),
-                        ) {
-                            *end = src_end;
+                        if let Some((_, end)) = ev.bounds(tz) {
+                            seen.insert(key.clone(), end);
                         }
                         if is_eligible(&ev, &cfg.work_hours, now, cfg.horizon_days) {
                             desired.push(Desired {
@@ -103,17 +99,18 @@ fn pass(
         };
 
         detect_manual_deletes(state, &dest_account, &dest_calendar, &copies, now);
-        remember_copies(state, &dest_account, &dest_calendar, &copies);
+        remember_copies(state, &dest_account, &dest_calendar, &copies, tz);
 
-        let existing: Vec<Existing> = copies
-            .into_iter()
-            .map(|event| Existing {
-                dest_event_id: event.id.clone(),
-                event,
-            })
-            .collect();
         let tombstones: BTreeSet<CopyKey> = state.tombstones.keys().cloned().collect();
-        let actions = plan(desired, &existing, &deletable, &tombstones, &cfg.label, now);
+        let actions = plan(
+            desired,
+            &copies,
+            &deletable,
+            &tombstones,
+            &cfg.label,
+            now,
+            tz,
+        );
 
         if !dry_run {
             for action in &actions {
@@ -166,7 +163,13 @@ pub fn cleanup_actions(
                 copy.tag("cab_source_account") == Some(src.account.as_str())
                     && copy.tag("cab_source_calendar") == Some(src.calendar.as_str())
             });
-            if copy.is_copy() && from_source && approx_end(&copy.end).is_some_and(|end| end > now) {
+            if copy.is_copy()
+                && from_source
+                && copy
+                    .end
+                    .to_utc(cfg.work_hours.timezone)
+                    .is_some_and(|end| end > now)
+            {
                 items.push((account.clone(), calendar.clone(), copy));
             }
         }
@@ -220,9 +223,15 @@ fn detect_manual_deletes(
     }
 }
 
-fn remember_copies(state: &mut State, account: &str, calendar: &str, copies: &[GEvent]) {
+fn remember_copies(
+    state: &mut State,
+    account: &str,
+    calendar: &str,
+    copies: &[GEvent],
+    tz: chrono_tz::Tz,
+) {
     for c in copies {
-        if let (Some(key), Some(end)) = (c.copy_key(), approx_end(&c.end)) {
+        if let (Some(key), Some(end)) = (c.copy_key(), c.end.to_utc(tz)) {
             state
                 .known_copies
                 .insert(c.id.clone(), known(key, end, account, calendar));
@@ -260,7 +269,7 @@ fn apply(
             };
             match result {
                 Ok(ev) => {
-                    if let Some(end) = approx_end(&ev.end) {
+                    if let Some(end) = ev.end.to_utc(cfg.work_hours.timezone) {
                         state
                             .known_copies
                             .insert(ev.id.clone(), known(d.key.clone(), end, account, calendar));
@@ -687,7 +696,7 @@ to = { account = "work", calendar = "primary" }
                 c.id.clone(),
                 crate::state::KnownCopy {
                     key: c.copy_key().unwrap(),
-                    end: approx_end(&c.end).unwrap(),
+                    end: c.end.to_utc(chrono_tz::UTC).unwrap(),
                     dest_account: "work".into(),
                     dest_calendar: "primary".into(),
                 },

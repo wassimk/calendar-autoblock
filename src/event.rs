@@ -65,7 +65,7 @@ pub struct CopyKey {
 }
 
 impl EventTime {
-    fn to_utc(&self, tz: Tz) -> Option<DateTime<Utc>> {
+    pub fn to_utc(&self, tz: Tz) -> Option<DateTime<Utc>> {
         if let Some(dt) = self.date_time {
             return Some(dt.with_timezone(&Utc));
         }
@@ -79,8 +79,7 @@ impl EventTime {
         match (self.date_time, self.date) {
             (Some(dt), _) => Some(
                 dt.with_timezone(&Utc)
-                    .format("%Y-%m-%dT%H:%M:%SZ")
-                    .to_string(),
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             ),
             (None, Some(d)) => Some(d.to_string()),
             _ => None,
