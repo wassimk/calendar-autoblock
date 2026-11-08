@@ -134,6 +134,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "dirs",
+ "form_urlencoded",
  "getrandom 0.4.3",
  "keyring-core",
  "serde",

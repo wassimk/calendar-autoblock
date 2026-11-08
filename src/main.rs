@@ -140,7 +140,8 @@ fn cmd_auth(account: &str, check: bool) -> anyhow::Result<()> {
 
 fn cmd_sync(dry_run: bool) -> anyhow::Result<()> {
     let cfg = config::load(&config::config_path())?;
-    let (report, _) = daemon::pass_once(&cfg, dry_run)?;
+    let mut api = daemon::build_api(&cfg)?;
+    let (report, _) = daemon::pass_once(&cfg, &mut api, dry_run)?;
     for action in &report.actions {
         println!("{}", describe(&cfg, action));
     }

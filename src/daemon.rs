@@ -1,4 +1,4 @@
-use crate::api::ApiError;
+use crate::api::{ApiError, CalendarApi};
 use crate::config::{self, Config};
 use crate::google::GoogleCalendar;
 use crate::oauth::{self, TokenStore};
@@ -61,11 +61,14 @@ pub fn update_status(status: &mut Status, report: &PassReport, now: DateTime<Utc
 }
 
 /// One pass against Google, saving state and status. Returns the report and the updated status.
-pub fn pass_once(cfg: &Config, dry_run: bool) -> Result<(PassReport, Status)> {
-    let mut api = build_api(cfg)?;
+pub fn pass_once(
+    cfg: &Config,
+    api: &mut dyn CalendarApi,
+    dry_run: bool,
+) -> Result<(PassReport, Status)> {
     let (mut state, state_note): (State, _) = state::load_json_or_reset(&state_path())?;
     let now = Utc::now();
-    let report = run_pass(cfg, &mut state, &mut api, now, dry_run);
+    let report = run_pass(cfg, &mut state, api, now, dry_run);
     let (mut status, status_note): (Status, _) = state::load_json_or_reset(&status_path())?;
     if !dry_run {
         state::save_json(&state_path(), &state)?;
@@ -81,15 +84,28 @@ pub fn pass_once(cfg: &Config, dry_run: bool) -> Result<(PassReport, Status)> {
 pub fn run_daemon(cfg_path: &Path, verbose: bool) -> Result<()> {
     log("starting");
     let mut previous = Status::default();
+    // Kept across passes so cached access tokens and pooled connections are reused
+    let mut api: Option<(PathBuf, GoogleCalendar<TokenStore>)> = None;
     loop {
         let sleep = match config::load(cfg_path) {
             Ok(cfg) => {
-                match pass_once(&cfg, false) {
-                    Ok((report, status)) => {
-                        log_changes(&previous, &status, &report, verbose);
-                        previous = status;
+                if api
+                    .as_ref()
+                    .is_none_or(|(client, _)| *client != cfg.oauth_client)
+                {
+                    api = build_api(&cfg)
+                        .map(|a| (cfg.oauth_client.clone(), a))
+                        .map_err(|e| log(&format!("{e:#}")))
+                        .ok();
+                }
+                if let Some((_, google)) = api.as_mut() {
+                    match pass_once(&cfg, google, false) {
+                        Ok((report, status)) => {
+                            log_changes(&previous, &status, &report, verbose);
+                            previous = status;
+                        }
+                        Err(e) => log(&format!("pass failed: {e:#}")),
                     }
-                    Err(e) => log(&format!("pass failed: {e:#}")),
                 }
                 cfg.poll_seconds
             }

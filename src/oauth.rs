@@ -73,18 +73,16 @@ pub fn challenge_for(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
-pub fn pkce_pair() -> (String, String) {
-    let mut bytes = [0u8; 48];
-    getrandom::fill(&mut bytes).expect("no system randomness");
-    let verifier = URL_SAFE_NO_PAD.encode(bytes);
-    let challenge = challenge_for(&verifier);
-    (verifier, challenge)
-}
-
-fn random_state() -> String {
-    let mut bytes = [0u8; 16];
+fn random_b64<const N: usize>() -> String {
+    let mut bytes = [0u8; N];
     getrandom::fill(&mut bytes).expect("no system randomness");
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub fn pkce_pair() -> (String, String) {
+    let verifier = random_b64::<48>();
+    let challenge = challenge_for(&verifier);
+    (verifier, challenge)
 }
 
 pub fn authorize_url(
@@ -134,7 +132,7 @@ pub fn run_loopback_flow(
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let redirect = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
     let (verifier, challenge) = pkce_pair();
-    let state = random_state();
+    let state = random_b64::<16>();
     let url = authorize_url(c, &redirect, scopes, &challenge, &state, login_hint);
 
     eprintln!("Opening your browser to sign in. If it doesn't open, visit:\n{url}\n");
@@ -194,36 +192,7 @@ fn wait_for_redirect(listener: &TcpListener) -> Result<HashMap<String, String>> 
 }
 
 fn parse_query(q: &str) -> HashMap<String, String> {
-    q.split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .map(|(k, v)| (percent_decode(k), percent_decode(v)))
-        .collect()
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = s
-            .get(i + 1..i + 3)
-            .and_then(|h| u8::from_str_radix(h, 16).ok());
-        match (bytes[i], hex) {
-            (b'%', Some(b)) => {
-                out.push(b);
-                i += 3;
-            }
-            (b'+', _) => {
-                out.push(b' ');
-                i += 1;
-            }
-            (b, _) => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    form_urlencoded::parse(q.as_bytes()).into_owned().collect()
 }
 
 fn exchange(c: &ClientSecrets, extra: &[(&str, &str)]) -> Result<TokenResponse, ApiError> {
