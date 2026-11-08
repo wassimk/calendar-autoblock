@@ -10,9 +10,9 @@ pub const SOURCE_SCOPES: [&str; 2] = [
 ];
 pub const DEST_SCOPES: [&str; 1] = ["https://www.googleapis.com/auth/calendar.events.owned"];
 
-const DEFAULT_LABEL: &str = "Personal Commitment";
-const DEFAULT_HORIZON_DAYS: u32 = 90;
-const DEFAULT_POLL_SECONDS: u64 = 300;
+pub const DEFAULT_LABEL: &str = "Personal Commitment";
+pub const DEFAULT_HORIZON_DAYS: u32 = 90;
+pub const DEFAULT_POLL_SECONDS: u64 = 300;
 const DEFAULT_MARGIN: &str = "1h";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,32 +110,15 @@ pub fn save(cfg: &Config, path: &Path) -> Result<()> {
 pub fn parse(text: &str) -> Result<Config> {
     let raw: RawConfig = toml::from_str(text)?;
     let wh = &raw.work_hours;
-    let timezone: chrono_tz::Tz = wh
-        .timezone
-        .parse()
-        .map_err(|_| anyhow!("unknown timezone {:?}", wh.timezone))?;
-    let days = wh
-        .days
-        .iter()
-        .map(|d| parse_day(d))
-        .collect::<Result<Vec<_>>>()?;
-    let start = parse_time(&wh.start)?;
-    let end = parse_time(&wh.end)?;
-    if end <= start {
-        bail!(
-            "work_hours end ({}) must be after start ({})",
-            wh.end,
-            wh.start
-        );
-    }
-    let work_hours = WorkHours {
-        timezone,
-        days,
-        start,
-        end,
-        margin_before: parse_margin(wh.margin_before.as_deref().unwrap_or(DEFAULT_MARGIN))?,
-        margin_after: parse_margin(wh.margin_after.as_deref().unwrap_or(DEFAULT_MARGIN))?,
-    };
+    let days: Vec<&str> = wh.days.iter().map(String::as_str).collect();
+    let work_hours = work_hours_from(
+        &wh.timezone,
+        &days,
+        &wh.start,
+        &wh.end,
+        wh.margin_before.as_deref().unwrap_or(DEFAULT_MARGIN),
+        wh.margin_after.as_deref().unwrap_or(DEFAULT_MARGIN),
+    )?;
     for rule in &raw.sync {
         for r in [&rule.from, &rule.to] {
             if !raw.accounts.contains_key(&r.account) {
@@ -151,6 +134,35 @@ pub fn parse(text: &str) -> Result<Config> {
         work_hours,
         accounts: raw.accounts,
         sync: raw.sync,
+    })
+}
+
+pub fn work_hours_from(
+    timezone: &str,
+    days: &[&str],
+    start: &str,
+    end: &str,
+    margin_before: &str,
+    margin_after: &str,
+) -> Result<WorkHours> {
+    let timezone: chrono_tz::Tz = timezone
+        .parse()
+        .map_err(|_| anyhow!("unknown timezone {timezone:?}"))?;
+    let days = days
+        .iter()
+        .map(|d| parse_day(d.trim()))
+        .collect::<Result<Vec<_>>>()?;
+    let (start_t, end_t) = (parse_time(start)?, parse_time(end)?);
+    if end_t <= start_t {
+        bail!("work_hours end ({end}) must be after start ({start})");
+    }
+    Ok(WorkHours {
+        timezone,
+        days,
+        start: start_t,
+        end: end_t,
+        margin_before: parse_margin(margin_before)?,
+        margin_after: parse_margin(margin_after)?,
     })
 }
 

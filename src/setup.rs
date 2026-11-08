@@ -1,6 +1,6 @@
 use crate::api::{CalendarApi, CalendarListEntry};
 use crate::config::{
-    self, AccountConfig, CalendarRef, Config, DEST_SCOPES, SOURCE_SCOPES, SyncRule, WorkHours,
+    self, AccountConfig, CalendarRef, Config, DEST_SCOPES, SOURCE_SCOPES, SyncRule,
 };
 use crate::daemon;
 use crate::keychain;
@@ -244,38 +244,17 @@ pub fn run_setup() -> Result<()> {
     let dst = prompt("Name for your work (destination) account", "work")?;
     let dst_email = prompt(&format!("Email for {dst}"), "")?;
 
-    println!(
-        "\nSigning in to {src}. Choose {} in the browser.",
-        if src_email.is_empty() {
-            "that account"
-        } else {
-            &src_email
-        }
-    );
-    sign_in(
-        &client,
-        &src,
-        &SOURCE_SCOPES,
-        Some(&src_email)
-            .filter(|e| !e.is_empty())
-            .map(String::as_str),
-    )?;
-    println!(
-        "\nSigning in to {dst}. Choose {} in the browser.",
-        if dst_email.is_empty() {
-            "that account"
-        } else {
-            &dst_email
-        }
-    );
-    sign_in(
-        &client,
-        &dst,
-        &DEST_SCOPES,
-        Some(&dst_email)
-            .filter(|e| !e.is_empty())
-            .map(String::as_str),
-    )?;
+    for (name, email, scopes) in [
+        (&src, &src_email, &SOURCE_SCOPES[..]),
+        (&dst, &dst_email, &DEST_SCOPES[..]),
+    ] {
+        let hint = (!email.is_empty()).then_some(email.as_str());
+        println!(
+            "\nSigning in to {name}. Choose {} in the browser.",
+            hint.unwrap_or("that account")
+        );
+        sign_in(&client, name, scopes, hint)?;
+    }
 
     let tz = prompt("\nTime zone for your work hours", "America/Chicago")?;
     let days = prompt("Work days", "mon,tue,wed,thu,fri")?;
@@ -283,28 +262,23 @@ pub fn run_setup() -> Result<()> {
     let end = prompt("Work day ends", "17:00")?;
     let margin = prompt("Margin before and after work hours", "1h")?;
 
+    let days: Vec<&str> = days.split(',').collect();
+    let work_hours = config::work_hours_from(&tz, &days, &start, &end, &margin, &margin)
+        .context("those work hours didn't parse")?;
     let account = |email: &str| AccountConfig {
-        email: Some(email.to_string()).filter(|e| !e.is_empty()),
+        email: (!email.is_empty()).then(|| email.to_string()),
     };
-    let raw = format!(
-        "oauth_client = {:?}\n[work_hours]\ntimezone = {tz:?}\ndays = [{}]\nstart = {start:?}\nend = {end:?}\nmargin_before = {margin:?}\nmargin_after = {margin:?}\n",
-        client_path.to_string_lossy(),
-        days.split(',')
-            .map(|d| format!("{:?}", d.trim()))
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
-    let parsed = config::parse(&raw).context("those work hours didn't parse")?;
     let mut cfg = Config {
+        oauth_client: client_path,
+        label: config::DEFAULT_LABEL.to_string(),
+        horizon_days: config::DEFAULT_HORIZON_DAYS,
+        poll_seconds: config::DEFAULT_POLL_SECONDS,
+        work_hours,
         accounts: BTreeMap::from([
             (src.clone(), account(&src_email)),
             (dst.clone(), account(&dst_email)),
         ]),
         sync: Vec::new(),
-        work_hours: WorkHours {
-            ..parsed.work_hours
-        },
-        ..parsed
     };
 
     let mut api = daemon::build_api(&cfg)?;
