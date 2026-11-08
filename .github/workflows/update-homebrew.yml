@@ -1,8 +1,13 @@
 name: Update Homebrew
 
-# Manual until the repo is public: a tap formula can't download release assets
-# from a private repo. Then switch back to workflow_run on Release, like st.
 on:
+  # workflow_run runs with this repo's secrets. It's safe here because it only
+  # follows this repo's own Release workflow and never checks out or runs code
+  # from the triggering run.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: [Release]
+    types: [completed]
+  # For re-running the formula update for the latest release by hand
   workflow_dispatch:
 
 permissions: {}
@@ -16,6 +21,7 @@ jobs:
     name: Update Formula
     permissions:
       contents: read # gh release view and download on this repo
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
