@@ -6,6 +6,7 @@ mod eligibility;
 mod event;
 mod keychain;
 mod oauth;
+mod reconcile;
 mod window;
 
 use clap::{Parser, Subcommand};
