@@ -12,6 +12,7 @@ pub struct PassReport {
     pub counts: Counts,
     pub actions: Vec<Action>,
     pub failures: Vec<(String, ApiError)>,
+    pub succeeded: Vec<String>,
     pub all_reads_ok: bool,
 }
 
@@ -58,6 +59,7 @@ fn pass(
             let (acct, cal) = (&rule.from.account, &rule.from.calendar);
             match api.list_events(acct, cal, now, time_max) {
                 Ok(events) => {
+                    report.succeeded.push(format!("{acct}/{cal}"));
                     deletable.insert((acct.clone(), cal.clone()));
                     for ev in events.into_iter().filter(|e| !e.is_copy()) {
                         let Some(key) = ev.copy_key() else { continue };
@@ -80,7 +82,12 @@ fn pass(
         }
 
         let copies = match api.list_copies(&dest_account, &dest_calendar, now, time_max) {
-            Ok(c) => c,
+            Ok(c) => {
+                report
+                    .succeeded
+                    .push(format!("{dest_account}/{dest_calendar}"));
+                c
+            }
             Err(e) => {
                 report.all_reads_ok = false;
                 report
@@ -121,6 +128,30 @@ fn pass(
 
     prune_tombstones(&mut state.tombstones, &seen, report.all_reads_ok, now);
     report
+}
+
+/// Every future copy on every destination, as (account, calendar, copy)
+pub fn cleanup_actions(
+    cfg: &Config,
+    api: &mut dyn CalendarApi,
+    now: DateTime<Utc>,
+) -> Result<Vec<(String, String, GEvent)>, ApiError> {
+    let dests: BTreeSet<(String, String)> = cfg
+        .sync
+        .iter()
+        .map(|r| (r.to.account.clone(), r.to.calendar.clone()))
+        .collect();
+    // Look past the horizon in case it was shortened since the copies were made
+    let until = now + chrono::Duration::days(i64::from(cfg.horizon_days).max(365));
+    let mut items = Vec::new();
+    for (account, calendar) in dests {
+        for copy in api.list_copies(&account, &calendar, now, until)? {
+            if copy.is_copy() && approx_end(&copy.end).is_some_and(|end| end > now) {
+                items.push((account.clone(), calendar.clone(), copy));
+            }
+        }
+    }
+    Ok(items)
 }
 
 fn detect_manual_deletes(
@@ -463,5 +494,52 @@ to = { account = "work", calendar = "primary" }
         assert_eq!(report.actions.len(), 1);
         assert!(dest(&api).is_empty());
         assert_eq!(state, State::default());
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::fake::FakeApi;
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn cleanup_lists_only_future_copies() {
+        let cfg = crate::config::parse(
+            r#"
+oauth_client = "/tmp/c.json"
+[work_hours]
+timezone = "America/Chicago"
+days = ["mon"]
+start = "08:00"
+end = "17:00"
+[accounts.personal]
+[accounts.work]
+[[sync]]
+from = { account = "personal", calendar = "appts" }
+to = { account = "work", calendar = "primary" }
+"#,
+        )
+        .unwrap();
+        let copy = |id: &str, start: &str, end: &str| -> GEvent {
+            serde_json::from_value(json!({
+                "id": id, "summary": "Personal Commitment",
+                "start": {"dateTime": start}, "end": {"dateTime": end},
+                "extendedProperties": {"private": {"cab_managed": "1", "cab_ical_uid": id}},
+            }))
+            .unwrap()
+        };
+        let mut api = FakeApi::default();
+        api.copies.insert(
+            ("work".into(), "primary".into()),
+            vec![
+                copy("past", "2026-11-09T08:00:00Z", "2026-11-09T09:00:00Z"),
+                copy("future", "2026-11-10T16:00:00Z", "2026-11-10T17:00:00Z"),
+            ],
+        );
+        let now: DateTime<Utc> = "2026-11-09T12:00:00Z".parse().unwrap();
+        let items = cleanup_actions(&cfg, &mut api, now).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].2.id, "future");
     }
 }

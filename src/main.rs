@@ -2,6 +2,7 @@
 
 mod api;
 mod config;
+mod daemon;
 mod eligibility;
 mod event;
 mod google;
@@ -93,6 +94,9 @@ fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Auth { account, check } => cmd_auth(&account, check),
+        Command::Sync { dry_run } => cmd_sync(dry_run),
+        Command::Cleanup { dry_run, yes } => cmd_cleanup(dry_run, yes),
+        Command::Start { verbose } => daemon::run_daemon(&config::config_path(), verbose),
         _ => Err(anyhow::anyhow!("not implemented yet")),
     };
     if let Err(e) = result {
@@ -127,4 +131,109 @@ fn cmd_auth(account: &str, check: bool) -> anyhow::Result<()> {
     keychain::save_refresh_token(account, &grant.refresh_token)?;
     println!("Signed in {account}");
     Ok(())
+}
+
+fn cmd_sync(dry_run: bool) -> anyhow::Result<()> {
+    let cfg = config::load(&config::config_path())?;
+    let (report, _) = daemon::pass_once(&cfg, dry_run)?;
+    for action in &report.actions {
+        println!("{}", describe(&cfg, action));
+    }
+    for (target, err) in &report.failures {
+        eprintln!("failed {target}: {err}");
+    }
+    let c = report.counts;
+    if dry_run {
+        println!(
+            "dry run: {} change(s) planned, nothing written",
+            report.actions.len()
+        );
+    } else {
+        println!(
+            "{} created, {} patched, {} deleted",
+            c.created, c.patched, c.deleted
+        );
+    }
+    Ok(())
+}
+
+fn describe(cfg: &config::Config, action: &reconcile::Action) -> String {
+    use reconcile::{Action, DeleteReason};
+    let when = |d: &reconcile::Desired| {
+        let tz = cfg.work_hours.timezone;
+        match d.source.bounds(tz) {
+            Some((s, e)) => format!(
+                "{} {}",
+                s.with_timezone(&tz).format("%Y-%m-%d %H:%M"),
+                e.with_timezone(&tz).format("%H:%M")
+            ),
+            None => "?".into(),
+        }
+    };
+    let from = |d: &reconcile::Desired| {
+        cfg.sync
+            .iter()
+            .find(|r| r.from.calendar == d.source_calendar)
+            .and_then(|r| r.from.name.clone())
+            .unwrap_or_else(|| d.source_calendar.clone())
+    };
+    match action {
+        Action::Create { desired } => format!("create {} ({})", when(desired), from(desired)),
+        Action::Patch { desired, .. } => format!("patch  {} ({})", when(desired), from(desired)),
+        Action::Delete {
+            dest_event_id,
+            reason,
+            ..
+        } => {
+            let why = match reason {
+                DeleteReason::SourceGone => "source gone",
+                DeleteReason::Duplicate => "duplicate",
+            };
+            format!("delete copy {dest_event_id} ({why})")
+        }
+    }
+}
+
+fn cmd_cleanup(dry_run: bool, yes: bool) -> anyhow::Result<()> {
+    use api::CalendarApi;
+    let cfg = config::load(&config::config_path())?;
+    let mut api = daemon::build_api(&cfg)?;
+    let items = sync::cleanup_actions(&cfg, &mut api, chrono::Utc::now())?;
+    let tz = cfg.work_hours.timezone;
+    for (account, calendar, copy) in &items {
+        let start = copy
+            .bounds(tz)
+            .map(|(s, _)| s.with_timezone(&tz).format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default();
+        println!("{start}  {account}/{calendar}  {}", copy.id);
+    }
+    if items.is_empty() {
+        println!("no future copies to delete");
+        return Ok(());
+    }
+    if dry_run {
+        println!("dry run: {} copies would be deleted", items.len());
+        return Ok(());
+    }
+    if !yes && !confirm(&format!("Delete {} copies? [y/N] ", items.len()))? {
+        println!("nothing deleted");
+        return Ok(());
+    }
+    let mut state: state::State = state::load_json(&daemon::state_path())?;
+    for (account, calendar, copy) in &items {
+        api.delete(account, calendar, &copy.id)?;
+        state.known_copies.remove(&copy.id);
+    }
+    state::save_json(&daemon::state_path(), &state)?;
+    println!("deleted {} copies", items.len());
+    Ok(())
+}
+
+fn confirm(prompt: &str) -> anyhow::Result<bool> {
+    use std::io::Write;
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
