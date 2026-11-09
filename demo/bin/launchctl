@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Stands in for launchctl so the demo never touches the real launchd.
+# bootstrap runs the sync loop in the background with the plist's log paths.
+pidfile="$HOME/.demo-launchd.pid"
+logs="$HOME/Library/Logs/calendar-autoblock"
+
+running() { [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; }
+
+case "$1" in
+  bootstrap)
+    nohup calendar-autoblock start >>"$logs/stdout.log" 2>>"$logs/stderr.log" &
+    echo $! >"$pidfile"
+    ;;
+  bootout)
+    running || { echo "Could not find service" >&2; exit 3; }
+    kill "$(cat "$pidfile")"
+    rm -f "$pidfile"
+    ;;
+  list)
+    running
+    ;;
+esac

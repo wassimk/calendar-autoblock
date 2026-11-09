@@ -11,6 +11,15 @@ const RETRY_DELAYS: [u64; 3] = [1, 2, 4];
 pub struct GoogleCalendar<T: AccessTokens> {
     tokens: T,
     agent: ureq::Agent,
+    base: String,
+}
+
+/// The Calendar API root; CALENDAR_AUTOBLOCK_API_BASE points it at a local stand-in for demos
+pub fn api_base(override_url: Option<String>) -> String {
+    override_url.map_or_else(
+        || BASE_URL.to_string(),
+        |u| u.trim_end_matches('/').to_string(),
+    )
 }
 
 #[derive(Deserialize)]
@@ -33,6 +42,7 @@ impl<T: AccessTokens> GoogleCalendar<T> {
         Self {
             tokens,
             agent: agent(),
+            base: api_base(std::env::var("CALENDAR_AUTOBLOCK_API_BASE").ok()),
         }
     }
 
@@ -105,8 +115,9 @@ impl<T: AccessTokens> GoogleCalendar<T> {
         time_max: DateTime<Utc>,
         copies_only: bool,
     ) -> Result<Vec<GEvent>, ApiError> {
+        let base = self.base.clone();
         self.paginate(account, |page| {
-            events_url(BASE_URL, calendar, time_min, time_max, copies_only, page)
+            events_url(&base, calendar, time_min, time_max, copies_only, page)
         })
         // A calendar this account can't see lists as 404, which means the same as 403 here
         .map_err(|e| {
@@ -129,8 +140,8 @@ impl<T: AccessTokens> GoogleCalendar<T> {
     }
 }
 
-fn event_url(calendar: &str, event_id: Option<&str>) -> String {
-    let mut url = format!("{BASE_URL}/calendars/{}/events", percent_encode(calendar));
+fn event_url(base: &str, calendar: &str, event_id: Option<&str>) -> String {
+    let mut url = format!("{base}/calendars/{}/events", percent_encode(calendar));
     if let Some(id) = event_id {
         url.push('/');
         url.push_str(&percent_encode(id));
@@ -161,7 +172,7 @@ impl<T: AccessTokens> CalendarApi for GoogleCalendar<T> {
     }
 
     fn insert(&mut self, a: &str, c: &str, body: &serde_json::Value) -> Result<GEvent, ApiError> {
-        self.write(a, Method::Post, &event_url(c, None), body)
+        self.write(a, Method::Post, &event_url(&self.base, c, None), body)
     }
 
     fn patch(
@@ -171,19 +182,20 @@ impl<T: AccessTokens> CalendarApi for GoogleCalendar<T> {
         id: &str,
         body: &serde_json::Value,
     ) -> Result<GEvent, ApiError> {
-        self.write(a, Method::Patch, &event_url(c, Some(id)), body)
+        self.write(a, Method::Patch, &event_url(&self.base, c, Some(id)), body)
     }
 
     fn delete(&mut self, a: &str, c: &str, id: &str) -> Result<(), ApiError> {
-        match self.send(a, Method::Delete, &event_url(c, Some(id)), None) {
+        match self.send(a, Method::Delete, &event_url(&self.base, c, Some(id)), None) {
             Ok(_) | Err(ApiError::Gone) => Ok(()),
             Err(e) => Err(e),
         }
     }
 
     fn list_calendars(&mut self, a: &str) -> Result<Vec<CalendarListEntry>, ApiError> {
+        let base = self.base.clone();
         self.paginate(a, |page| {
-            let mut url = format!("{BASE_URL}/users/me/calendarList?maxResults=250");
+            let mut url = format!("{base}/users/me/calendarList?maxResults=250");
             if let Some(t) = page {
                 url.push_str(&format!("&pageToken={}", percent_encode(t)));
             }
@@ -252,6 +264,15 @@ fn parse_event(body: &str) -> Result<GEvent, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_base_defaults_to_google_and_honors_override() {
+        assert_eq!(api_base(None), BASE_URL);
+        assert_eq!(
+            api_base(Some("http://127.0.0.1:8765/".into())),
+            "http://127.0.0.1:8765"
+        );
+    }
 
     #[test]
     fn classify_maps_statuses() {

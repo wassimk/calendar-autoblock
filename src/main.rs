@@ -142,8 +142,17 @@ fn cmd_sync(dry_run: bool) -> anyhow::Result<()> {
     let cfg = config::load(&config::config_path())?;
     let mut api = daemon::build_api(&cfg)?;
     let (report, _) = daemon::pass_once(&cfg, &mut api, dry_run)?;
-    for action in &report.actions {
-        println!("{}", describe(&cfg, action));
+    let mut lines: Vec<String> = report.actions.iter().map(|a| describe(&cfg, a)).collect();
+    // Creates and patches start with their date, so this lists them chronologically, deletes last
+    lines.sort_by_key(|l| {
+        (
+            l.starts_with("delete"),
+            l.split_once(' ')
+                .map(|(_, rest)| rest.trim_start().to_string()),
+        )
+    });
+    for line in lines {
+        println!("{line}");
     }
     for (target, err) in &report.failures {
         eprintln!("failed {target}: {err}");

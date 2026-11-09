@@ -85,8 +85,15 @@ struct RawWorkHours {
     margin_after: Option<String>,
 }
 
+/// Where the app keeps its files; CALENDAR_AUTOBLOCK_HOME moves them (and only them) for demos
 pub fn home() -> PathBuf {
-    dirs::home_dir().expect("no home directory")
+    home_from(std::env::var_os("CALENDAR_AUTOBLOCK_HOME"))
+}
+
+fn home_from(override_dir: Option<std::ffi::OsString>) -> PathBuf {
+    override_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dirs::home_dir().expect("no home directory"))
 }
 
 pub fn config_path() -> PathBuf {
@@ -282,6 +289,15 @@ to = { account = "work", calendar = "primary" }
 
     fn fixture() -> Config {
         load(Path::new("tests/fixtures/config_basic.toml")).unwrap()
+    }
+
+    #[test]
+    fn home_honors_override() {
+        assert_eq!(
+            home_from(Some("/tmp/demo-home".into())),
+            PathBuf::from("/tmp/demo-home")
+        );
+        assert_eq!(home_from(None), dirs::home_dir().unwrap());
     }
 
     #[test]
