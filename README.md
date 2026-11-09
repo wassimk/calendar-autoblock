@@ -2,6 +2,8 @@
 
 Block time on your work Google Calendar when personal appointments fall during your work day. It runs in the background on your Mac and copies each qualifying personal event onto your work calendar as a busy block titled **Personal Commitment**, with no other details.
 
+![calendar-autoblock demo](demo/calendar-autoblock.gif)
+
 ## 💡 How It Works
 
 Every 5 minutes, calendar-autoblock reads the next 90 days of the personal calendars you pick, decides which events overlap your work hours (plus a margin), and makes your work calendar match:
@@ -39,13 +41,11 @@ You bring your own Google OAuth client, so no one else's app is involved.
 
 ## 🛠️ Install
 
-While the repo is private, build from source:
-
 ```shell
-cargo install --path .
+brew install wassimk/tap/calendar-autoblock
 ```
 
-Homebrew (`brew install wassimk/tap/calendar-autoblock`) will follow when the repo is public.
+Requires macOS. Release builds are signed and notarized.
 
 ### 1. Create a Google OAuth client
 
@@ -169,11 +169,10 @@ calendar-autoblock status
 - **`Google didn't grant: ...`.** A box was unchecked on Google's consent screen. Run `auth` again and leave every box checked.
 - **`not owned by personal`.** That calendar is shared with you, and the read-only scope only covers calendars you own.
 - **`Offline since ...`.** Your Mac couldn't reach Google. It catches up on the next pass after reconnecting, and it never deletes a block because a read failed.
-- **Keychain prompts after rebuilding from source.** macOS ties Keychain access to the exact binary. Choose **Always Allow** again after each `cargo install`.
 
 ## 📝 Good to Know
 
 - It runs only while your Mac is awake. New appointments made while it's off appear on the next pass after it wakes.
 - Recurring appointments are copied one occurrence at a time, so declining or deleting one occurrence removes just that block.
+- Deleting a whole series removes its blocks across the whole sync window (the next 90 days by default) on the next pass.
 - If the same event is on two of your personal calendars, you get one block.
-- Your Google Workspace admin can see that you granted the app access to your work calendar, along with the scope.
