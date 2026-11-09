@@ -1,0 +1,16 @@
+oauth_client = "~/.config/calendar-autoblock/client_secret.json"
+
+[work_hours]
+timezone = "America/Chicago"
+days = ["mon", "tue", "wed", "thu"]
+start = "08:00"
+end = "17:00"
+margin_before = "1h"
+margin_after = "1h"
+
+[accounts.home]
+[accounts.office]
+
+[[sync]]
+from = { account = "home", calendar = "appointments@group.calendar.google.com", name = "Appointments" }
+to = { account = "office", calendar = "primary" }
