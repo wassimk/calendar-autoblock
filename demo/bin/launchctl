@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Stands in for launchctl so the demo never touches the real launchd.
 # bootstrap runs the sync loop in the background with the plist's log paths.
-pidfile="$HOME/.demo-launchd.pid"
-logs="$HOME/Library/Logs/calendar-autoblock"
+pidfile="$CALENDAR_AUTOBLOCK_HOME/.demo-launchd.pid"
+logs="$CALENDAR_AUTOBLOCK_HOME/Library/Logs/calendar-autoblock"
 
 running() { [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; }
 
